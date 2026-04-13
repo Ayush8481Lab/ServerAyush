@@ -1,9 +1,8 @@
 import puppeteer from 'puppeteer-core';
-import chromium from '@sparticuz/chromium';
+import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
   const url = req.query.url;
-  // Get wait time from URL, default to 3 seconds if not provided
   const wait = req.query.wait ? parseInt(req.query.wait) : 3;
 
   if (!url) {
@@ -12,10 +11,13 @@ export default async function handler(req, res) {
 
   let browser = null;
   try {
-    // Tell Vercel to use the mini-chromium browser
-    const executablePath = await chromium.executablePath();
+    // We tell Vercel to download the missing browser files on the fly
+    const executablePath = await chromium.executablePath(
+      "https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar"
+    );
+
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args:[...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
@@ -24,12 +26,12 @@ export default async function handler(req, res) {
     const page = await browser.newPage();
     const networkLogs =[];
 
-    // Listen to every background network request the website makes
+    // Listen to background network requests
     page.on('request', (req) => {
       networkLogs.push({
         url: req.url(),
         method: req.method(),
-        type: req.resourceType() // e.g., image, script, stylesheet
+        type: req.resourceType()
       });
     });
 
@@ -39,7 +41,7 @@ export default async function handler(req, res) {
     // Wait for the requested number of seconds
     await new Promise(resolve => setTimeout(resolve, wait * 1000));
 
-    // Close the browser to free up memory
+    // Close the browser to free up Vercel memory
     await browser.close();
 
     // Send the logs back to you
