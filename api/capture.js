@@ -11,13 +11,13 @@ export default async function handler(req, res) {
 
   let browser = null;
   try {
-    // We tell Vercel to download the missing browser files on the fly
+    // ⚠️ CRITICAL FIX: Use the v143 pack with .x64.tar to bypass Vercel's missing libnss3.so
     const executablePath = await chromium.executablePath(
-      "https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar"
+      "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
     );
 
     browser = await puppeteer.launch({
-      args:[...chromium.args, '--no-sandbox', '--disable-setuid-sandbox'],
+      args: chromium.args,
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
