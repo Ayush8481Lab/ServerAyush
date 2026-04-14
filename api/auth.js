@@ -2,13 +2,18 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
-  // Prevent Vercel / Cloudflare / Browser from caching the API response
+  // 1. Force Vercel API network to NEVER cache this response
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  const url = req.query.url || 'https://open.spotify.com';
+  let url = req.query.url || 'https://open.spotify.com';
   const wait = req.query.wait ? parseFloat(req.query.wait) : 0.5;
+
+  // 2. Add a random timestamp to the URL so Spotify ignores its own Service Worker cache
+  if (url.includes('spotify.com')) {
+    url = `${url}?_cb=${Date.now()}`;
+  }
 
   let browser = null;
   try {
@@ -23,8 +28,13 @@ export default async function handler(req, res) {
       defaultViewport: chromium.defaultViewport,
     });
 
-    // Reverted to the standard newPage() command
     const page = await browser.newPage();
+    
+    // 3. CRITICAL FIX: Completely wipe Vercel's hidden Chromium storage
+    // This destroys any leftover cookies from previous API calls
+    const client = await page.target().createCDPSession();
+    await client.send('Network.clearBrowserCache');
+    await client.send('Network.clearBrowserCookies');
     
     let tokenData = null;
 
