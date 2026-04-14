@@ -2,13 +2,15 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
-  // 1. Force Vercel API network to NEVER cache this response at any layer
+  // Prevent caching at all layers
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, s-maxage=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
   const url = req.query.url || 'https://open.spotify.com';
-  const wait = req.query.wait ? parseFloat(req.query.wait) : 0.5;
+  
+  // Capture the real IP of the user making the API request
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
   let browser = null;
   try {
@@ -17,88 +19,83 @@ export default async function handler(req, res) {
     );
 
     browser = await puppeteer.launch({
-      // 2. Launch directly into Incognito mode
-      args: [...chromium.args, '--incognito'],
+      args:[...chromium.args, '--incognito'],
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
     });
 
-    // Use the first available page from the incognito browser
     const pages = await browser.pages();
     const page = pages.length > 0 ? pages[0] : await browser.newPage();
     
-    // 3. Disable cache and bypass service workers natively
     await page.setCacheEnabled(false);
     await page.setBypassServiceWorker(true);
 
-    // 4. Send CDP Commands to wipe any lingering Vercel network cache
-    const client = await page.target().createCDPSession();
-    await client.send('Network.clearBrowserCache');
-    await client.send('Network.clearBrowserCookies');
-
-    // 5. NUCLEAR OPTION: Delete the Service Worker API so Spotify cannot use offline cache
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'serviceWorker', { get: () => undefined });
-    });
-
-    // 6. SPEED OPTIMIZATION: Abort images, fonts, and CSS to make Chromium lightning fast
+    // 1. Turn on request interception
     await page.setRequestInterception(true);
+    let capturedUrl = null;
+
     page.on('request', (request) => {
-      const resourceType = request.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+      const reqUrl = request.url();
+      
+      // 2. Catch the totp token URL but STOP Vercel's browser from claiming it!
+      if (reqUrl.includes('/api/token') && request.method() !== 'OPTIONS') {
+        capturedUrl = reqUrl;
+        request.abort(); 
+      } 
+      // Block images/styles to speed up the scraping
+      else if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) {
         request.abort();
       } else {
         request.continue();
       }
     });
 
-    let tokenData = null;
-
-    // Listen to background network responses to catch the JSON payload
-    page.on('response', async (response) => {
-      const resUrl = response.url();
-      
-      // Check if it's the Spotify token endpoint and NOT an OPTIONS preflight request
-      if (resUrl.includes('/api/token') && response.request().method() !== 'OPTIONS') {
-        try {
-          const json = await response.json();
-          // Verify it's the correct payload by checking for clientId
-          if (json && json.clientId) {
-            tokenData = json;
-          }
-        } catch (err) {
-          // Ignore errors if the body is empty or fails to parse
-        }
-      }
-    });
-
-    // 7. Append a random timestamp to the Spotify URL so it never loads from memory
     const targetUrl = url.includes('?') ? `${url}&_cb=${Date.now()}` : `${url}?_cb=${Date.now()}`;
-
-    // Open the website
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
 
-    // Wait for the requested number of seconds
-    await new Promise(resolve => setTimeout(resolve, wait * 1000));
+    // 3. Wait until we capture the URL (Wait up to 3 seconds)
+    let waitTime = 0;
+    while (!capturedUrl && waitTime < 3000) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waitTime += 100;
+    }
 
-    // Close the browser to free up Vercel memory
     await browser.close();
     browser = null;
 
-    // Send the customized JSON back to you
-    if (tokenData) {
-      tokenData._notes = "Developed By Ayush@8481";
-      return res.status(200).json(tokenData);
-    } else {
-      return res.status(404).json({ 
-        error: "Token request not found.", 
-        details: `Waited ${wait} seconds but Spotify didn't generate the token. Vercel might be running slow. Try passing ?wait=2` 
+    if (capturedUrl) {
+      
+      // OPTION A: 100% Client-Side Fetch
+      // If you call your API like this: https://my.vercel.app/api/auth?redirect=true
+      // Vercel instantly redirects your device directly to the Spotify URL.
+      if (req.query.redirect === 'true') {
+        return res.redirect(307, capturedUrl);
+      }
+
+      // OPTION B: Vercel Proxy with IP Spoofing (Default)
+      // Vercel fetches the token, but passes your actual Client IP to Spotify
+      const spotifyRes = await fetch(capturedUrl, {
+        headers: {
+          'X-Forwarded-For': clientIp,
+          'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0'
+        }
       });
+      
+      const tokenData = await spotifyRes.json();
+      
+      // Attach your requested notes, plus the URL in case your app wants to fetch it manually
+      tokenData._notes = "Developed By Ayush@8481";
+      tokenData.client_url = capturedUrl; 
+      
+      return res.status(200).json(tokenData);
+
+    } else {
+      return res.status(404).json({ error: "Could not capture the dynamic totp URL from Spotify." });
     }
 
   } catch (error) {
     if (browser) await browser.close();
-    return res.status(500).json({ error: "Failed to open page", details: error.message });
+    return res.status(500).json({ error: "Failed to process", details: error.message });
   }
 }
