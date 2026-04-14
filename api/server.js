@@ -7,9 +7,7 @@ const PORT = process.env.PORT || 3000;
 
 // Target Domains
 const DOMAINS =[
-    "https://inv.nadeko.net",
-    "https://invidious.nerdvpn.de",
-    "https://yt.chocolatemoo53.com"
+    "https://inv.nadeko.net"
 ];
 
 // Helper to extract formatted Audio & Video from Invidious JSON
