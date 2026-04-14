@@ -1,4 +1,18 @@
 export default async function handler(req, res) {
+  // --- CORS Configuration ---
+  // Allow all origins (all websites and localhost)
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Allow specific methods
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  // Allow specific headers
+  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, Accept');
+
+  // Handle browser "Preflight" requests (OPTIONS method)
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  // ---------------------------
+
   // 1. Extract 'q' (song name) and 'artist' from the URL query
   const { q, artist } = req.query;
 
@@ -8,9 +22,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 3. Combine query for Best Match (e.g., "Believer Imagine Dragons")
+    // 3. Combine query for Best Match
     const searchQuery = artist ? `${q} ${artist}` : q;
-    
+
     // 4. Fetch data from the provided API
     const targetApi = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQuery)}`;
     const response = await fetch(targetApi);
@@ -24,28 +38,28 @@ export default async function handler(req, res) {
     // 6. Get the absolute best match (First result)
     const song = data.data.results[0];
 
-    // 7. Format the Artists (Primary + Featured separated by comma)
-    const primaryArtists = song.artists.primary ||[];
+    // 7. Format the Artists
+    const primaryArtists = song.artists.primary || [];
     const featuredArtists = song.artists.featured || [];
     const allArtists = [...primaryArtists, ...featuredArtists]
       .map(a => a.name)
       .join(", ");
 
-    // 8. Get the highest quality Bannerlink (Usually the last element in the array like 500x500)
+    // 8. Get the highest quality Bannerlink
     const bestBanner = song.image && song.image.length > 0 
       ? song.image[song.image.length - 1].url 
       : "";
 
-    // 9. Format response exactly as you requested
+    // 9. Format response
     const filteredResponse = {
       Title: song.name,
       Artists: allArtists || "Unknown Artist",
       Bannerlink: bestBanner,
       PermaUrl: song.url,
-      StreamLinks: song.downloadUrl ||[]
+      StreamLinks: song.downloadUrl || []
     };
 
-    // 10. (Crucial for Low Latency) Cache the result on Vercel's Edge Network for 24 hours
+    // 10. Cache the result for 24 hours
     res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
 
     // Return the response
