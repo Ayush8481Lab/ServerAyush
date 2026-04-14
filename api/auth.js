@@ -2,6 +2,20 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
+  // --- START CORS CONFIGURATION ---
+  // Allow any application to access this API (* means all origins are allowed)
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+
+  // Fast-exit for browser CORS preflight requests (OPTIONS method)
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  // --- END CORS CONFIGURATION ---
+
   // 1. Force Vercel API network to NEVER cache this response at any layer
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, s-maxage=0');
   res.setHeader('Pragma', 'no-cache');
