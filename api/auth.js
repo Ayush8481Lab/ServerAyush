@@ -2,7 +2,7 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
-  // 1. Force Vercel to NEVER cache this API response
+  // Prevent Vercel / Cloudflare / Browser from caching the API response
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -17,20 +17,14 @@ export default async function handler(req, res) {
     );
 
     browser = await puppeteer.launch({
-      // Add extra chromium args to disable caching at the browser level
-      args: [...chromium.args, '--incognito', '--disable-application-cache'],
+      args: chromium.args,
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
     });
 
-    // 2. Open an completely fresh Incognito Window
-    const context = await browser.createIncognitoBrowserContext();
-    const page = await context.newPage();
-
-    // 3. Disable Puppeteer cache and Bypass Service Workers
-    await page.setCacheEnabled(false);
-    await page.setBypassServiceWorker(true);
+    // Reverted to the standard newPage() command
+    const page = await browser.newPage();
     
     let tokenData = null;
 
