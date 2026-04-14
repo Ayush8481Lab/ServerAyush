@@ -1,7 +1,15 @@
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
+import crypto from 'crypto';
 
 export default async function handler(req, res) {
+  const url = req.query.url;
+  const wait = req.query.wait ? parseInt(req.query.wait) : 5; // Increased default wait for challenges
+
+  if (!url) {
+    return res.status(400).json({ error: "Please provide a URL." });
+  }
+
   let browser = null;
   try {
     const executablePath = await chromium.executablePath(
@@ -9,48 +17,92 @@ export default async function handler(req, res) {
     );
 
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args: [
+        ...chromium.args,
+        '--disable-blink-features=AutomationControlled', // Hides "Automation" status
+        '--no-sandbox',
+        '--disable-setuid-sandbox'
+      ],
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
     });
 
     const page = await browser.newPage();
-    let exactPayload = null;
+    
+    // 1. SET REAL USER AGENT (Crucial to bypass go-away)
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
 
-    // 1. Secretly listen to all network requests
-    page.on('request', (interceptedRequest) => {
-      // Look specifically for Spotify's GraphQL API
-      if (interceptedRequest.url().includes('pathfinder/v2/query')) {
-        const postData = interceptedRequest.postData();
-        
-        // If the request contains the search data, steal the payload!
-        if (postData && postData.includes('searchDesktop')) {
-          exactPayload = JSON.parse(postData);
+    // 2. STEALTH: Remove the webdriver property
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
+
+    const networkLogs = [];
+    const generateHash = (data) => crypto.createHash('sha256').update(data).digest('hex');
+
+    // Deep Network Listener
+    page.on('response', async (response) => {
+      try {
+        const request = response.request();
+        const logEntry = {
+          url: response.url(),
+          method: request.method(),
+          type: request.resourceType(),
+          status: response.status(),
+          headers: response.headers(), // Deep analysis: Headers
+          sha256Hash: "n/a"
+        };
+
+        // Extract URL Fragment
+        try { logEntry.hash = new URL(response.url()).hash; } catch (e) { logEntry.hash = ""; }
+
+        // Capture Buffer for Hash (only for non-redirects)
+        if (response.status() < 300 || response.status() >= 400) {
+          const buffer = await response.buffer().catch(() => null);
+          if (buffer) {
+            logEntry.sha256Hash = generateHash(buffer);
+          }
         }
+        networkLogs.push(logEntry);
+      } catch (err) {
+        // Silently skip if response is closed or failed
       }
     });
 
-    // 2. Open Spotify to a specific search page (This forces Spotify to fire the request)
-    await page.goto('https://open.spotify.com/search/Drake', { waitUntil: 'networkidle2' });
+    // 3. BYPASS CHALLENGE: Navigate and wait for potential redirects
+    // Use 'networkidle2' to ensure the "go-away" challenge JS has finished executing
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Wait 3 seconds to ensure the API request finishes
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Extra wait for the "meta-refresh" challenge to actually redirect
+    await new Promise(resolve => setTimeout(resolve, wait * 1000));
+
+    // Final Capture
+    const finalUrl = page.url();
+    const htmlContent = await page.content();
+    const pageSha256 = generateHash(htmlContent);
+
+    let finalUrlFragment = "";
+    try { finalUrlFragment = new URL(finalUrl).hash; } catch (e) { finalUrlFragment = ""; }
 
     await browser.close();
 
-    // 3. Print the exact Python dictionary you need for your main.py!
-    if (exactPayload) {
-      return res.status(200).json({
-        SUCCESS: "COPY THE 'payload' OBJECT BELOW AND PASTE IT INTO YOUR PYTHON main.py",
-        payload: exactPayload
-      });
-    } else {
-      return res.status(404).json({ error: "Could not find the Payload. Try refreshing the page." });
-    }
+    return res.status(200).json({
+      target_url: url,
+      final_url: finalUrl,
+      url_fragment: finalUrlFragment,
+      page_sha256Hash: pageSha256,
+      waited_seconds: wait,
+      total_requests: networkLogs.length,
+      logs: networkLogs
+    });
 
   } catch (error) {
     if (browser) await browser.close();
-    return res.status(500).json({ error: "Failed to open page", details: error.message });
+    return res.status(500).json({ 
+      error: "Bypass failed or timeout", 
+      details: error.message,
+      note: "Try increasing the 'wait' parameter or checking if the site has IP-blocked Vercel."
+    });
   }
 }
