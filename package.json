@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
+    "express": "^4.19.2",
     "@sparticuz/chromium-min": "^143.0.4",
     "puppeteer-core": "^24.34.0",
     "puppeteer-extra": "^3.3.6",
