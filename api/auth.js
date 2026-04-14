@@ -2,29 +2,36 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
-  // Set defaults specifically for Spotify auth scraping
+  // 1. Force Vercel to NEVER cache this API response
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const url = req.query.url || 'https://open.spotify.com';
-  
-  // Use parseFloat so a value like 0.5 actually works (parseInt would convert 0.5 to 0)
   const wait = req.query.wait ? parseFloat(req.query.wait) : 0.5;
 
   let browser = null;
   try {
-    // Use the v143 pack with .x64.tar to bypass Vercel's missing libnss3.so
     const executablePath = await chromium.executablePath(
       "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
     );
 
     browser = await puppeteer.launch({
-      args: chromium.args,
+      // Add extra chromium args to disable caching at the browser level
+      args: [...chromium.args, '--incognito', '--disable-application-cache'],
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
     });
 
-    const page = await browser.newPage();
+    // 2. Open an completely fresh Incognito Window
+    const context = await browser.createIncognitoBrowserContext();
+    const page = await context.newPage();
+
+    // 3. Disable Puppeteer cache and Bypass Service Workers
+    await page.setCacheEnabled(false);
+    await page.setBypassServiceWorker(true);
     
-    // Variable to hold the Spotify token JSON once found
     let tokenData = null;
 
     // Listen to background network responses to catch the JSON payload
@@ -48,7 +55,7 @@ export default async function handler(req, res) {
     // Open the website
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    // Wait for the requested number of seconds (Default: 0.5s)
+    // Wait for the requested number of seconds
     await new Promise(resolve => setTimeout(resolve, wait * 1000));
 
     // Close the browser to free up Vercel memory
@@ -57,9 +64,7 @@ export default async function handler(req, res) {
 
     // Send the customized JSON back to you
     if (tokenData) {
-      // Inject your custom note
       tokenData._notes = "Developed By Ayush@8481";
-      
       return res.status(200).json(tokenData);
     } else {
       return res.status(404).json({ 
