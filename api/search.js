@@ -1,4 +1,4 @@
-   // Levenshtein distance similarity (returns a value from 0.0 to 1.0)
+// Levenshtein distance similarity (returns a value from 0.0 to 1.0)
 const getLevenshteinSimilarity = (s1, s2) => {
     if (!s1 || !s2) return 0;
     if (s1 === s2) return 1;
@@ -99,7 +99,11 @@ export default async function handler(req, res) {
         // ==========================================
         // 3. DEEP ANALYSIS MATCHING ON MIXED RESULTS
         // ==========================================
-        const tTitle = clean(safeQ); 
+        
+        // Strip brackets from the USER QUERY before comparing
+        const qTitleOriginal = cleanHTML(safeQ);
+        const tTitle = clean(qTitleOriginal); 
+        const tTitleNoBrackets = clean(qTitleOriginal.replace(/\([^)]*\)/g, "").replace(/\[[^\]]*\]/g, ""));
         
         // Split provided artists by comma for deep individual matching
         const tArtistsArray = safeArtist ? safeArtist.split(',').map(a => clean(a)).filter(a => a) :[];
@@ -116,19 +120,20 @@ export default async function handler(req, res) {
             // Extract artists safely from JioSaavn structure
             const primaryArtists = song.artists?.primary ||[];
             const featuredArtists = song.artists?.featured || [];
-            const rArtists =[...primaryArtists, ...featuredArtists].map(a => clean(a.name));
+            const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
             
             // --- STRICT TITLE SIMILARITY CHECK (> 70% Required) ---
-            // Strip common brackets (like "(From Movie)") for a pure core title comparison
             const rTitleNoBrackets = clean(rTitleOriginal.replace(/\([^)]*\)/g, "").replace(/\[[^\]]*\]/g, ""));
             
+            // 1. Raw exact match (Includes Brackets)
             const sim1 = getLevenshteinSimilarity(tTitle, rTitle);
-            const sim2 = getLevenshteinSimilarity(tTitle, rTitleNoBrackets);
+            // 2. Core match without bracket extensions
+            const sim2 = getLevenshteinSimilarity(tTitleNoBrackets, rTitleNoBrackets);
             
-            // Word level overlap for partial matches (e.g., query "Shape of" matching "Shape of you")
-            const qWords = tTitle.split(' ').filter(Boolean);
+            // 3. Word level overlap for partial matches on CORE words
+            const qWords = tTitleNoBrackets.split(' ').filter(Boolean);
             const tWords = rTitleNoBrackets.split(' ').filter(Boolean);
             let wordMatches = 0;
             
@@ -141,7 +146,6 @@ export default async function handler(req, res) {
                 });
             }
             
-            // Evaluate both depending on if user over-searched or under-searched
             const wordSimQuery = qWords.length > 0 ? wordMatches / qWords.length : 0;
             const wordSimTarget = tWords.length > 0 ? wordMatches / tWords.length : 0;
             
@@ -153,8 +157,10 @@ export default async function handler(req, res) {
                 return; // Skips to the next iteration. Completely ignore this track.
             }
             
-            // Base title score based on similarity
+            // DYNAMIC SCORING FIX: Heavily prioritize songs with matching brackets
             score += (maxTitleSim * 100);
+            score += (sim1 * 80); // BONUS: If the string matching brackets is identical, breaks the tie & wins.
+            score += (sim2 * 40); // BONUS: Core base string match 
             
             // --- Artist Matching (STRICT FILTERING AFTER TITLE) ---
             if (tArtistsArray.length > 0) {
@@ -179,7 +185,6 @@ export default async function handler(req, res) {
                 }
                 
                 // STRICT CONDITION 2: If an artist is provided in query, at least ONE must match.
-                // If it fails to match at least one artist, completely reject this song.
                 if (!matchedAtLeastOneArtist) {
                     return; // Disqualifies the track entirely.
                 }
@@ -218,7 +223,7 @@ export default async function handler(req, res) {
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-            StreamLinks: song.downloadUrl ||[]
+           StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
