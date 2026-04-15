@@ -26,11 +26,11 @@ export default async function handler(req, res) {
         // ==========================================
         
         // Query 1: Exactly ?query=SongName&artist=ArtistName (NO blank spaces before &)
-        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}` : ""}`;
+        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}&page=1` : ""}`;
         
         // Query 2: Exactly ?query=SongName ArtistName
         const searchQueryCombined = `${safeQ} ${safeArtist}`.trim();
-        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}`;
+        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}&page=1`;
         
         // Helper to fetch and safely return results array
         const fetchResults = async (url) => {
