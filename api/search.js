@@ -8,6 +8,10 @@ export default async function handler(req, res) {
     let { q, artist } = req.query;
     if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
 
+    // Ensure no trailing spaces cause issues in the URL
+    const safeQ = q.trim();
+    const safeArtist = artist ? artist.trim() : "";
+
     // Helper: Unescape HTML entities from API outputs
     const cleanHTML = (str) => {
         return str ? str.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&rsquo;/g, "'") : "";
@@ -21,11 +25,11 @@ export default async function handler(req, res) {
         // 1. PERFORM 2 CONCURRENT QUERIES
         // ==========================================
         
-        // Query 1: Format -> ?query=SongName&artist=ArtistName
-        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(q)}${artist ? `&artist=${encodeURIComponent(artist)}` : ""}`;
+        // Query 1: Exactly ?query=SongName&artist=ArtistName (NO blank spaces before &)
+        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}` : ""}`;
         
-        // Query 2: Format -> ?query=SongName ArtistName
-        const searchQueryCombined = `${q} ${artist || ""}`.trim();
+        // Query 2: Exactly ?query=SongName ArtistName
+        const searchQueryCombined = `${safeQ} ${safeArtist}`.trim();
         const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}`;
         
         // Helper to fetch and safely return results array
@@ -33,7 +37,7 @@ export default async function handler(req, res) {
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                return (data.success && data.data?.results) ? data.data.results :[];
+                return (data.success && data.data?.results) ? data.data.results : [];
             } catch (err) {
                 return[];
             }
@@ -48,7 +52,7 @@ export default async function handler(req, res) {
         // ==========================================
         // 2. MIX BOTH RESPONSES AND DEDUPLICATE
         // ==========================================
-        const combinedResults =[...results1, ...results2];
+        const combinedResults = [...results1, ...results2];
 
         if (combinedResults.length === 0) {
             return res.status(404).json({ error: "No matching song found in either query." });
@@ -67,10 +71,10 @@ export default async function handler(req, res) {
         // ==========================================
         // 3. DEEP ANALYSIS MATCHING ON MIXED RESULTS
         // ==========================================
-        const tTitle = clean(q); 
+        const tTitle = clean(safeQ); 
         
         // Split provided artists by comma for deep individual matching
-        const tArtistsArray = artist ? artist.split(',').map(a => clean(a)).filter(a => a) :[];
+        const tArtistsArray = safeArtist ? safeArtist.split(',').map(a => clean(a)).filter(a => a) :[];
         
         let bestMatch = null; 
         let highestScore = 0;
@@ -81,8 +85,8 @@ export default async function handler(req, res) {
             const rTitle = clean(song.name); 
             
             // Extract artists safely from JioSaavn structure
-            const primaryArtists = song.artists?.primary ||[];
-            const featuredArtists = song.artists?.featured || [];
+            const primaryArtists = song.artists?.primary || [];
+            const featuredArtists = song.artists?.featured ||[];
             const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
@@ -141,8 +145,8 @@ export default async function handler(req, res) {
         // 4. RESPONSE FORMATTING
         // ==========================================
         const song = bestMatch;
-        const primaryArtists = song.artists?.primary || [];
-        const featuredArtists = song.artists?.featured ||[];
+        const primaryArtists = song.artists?.primary ||[];
+        const featuredArtists = song.artists?.featured || [];
         const allArtists = [...primaryArtists, ...featuredArtists]
             .map(a => cleanHTML(a.name))
             .join(", ");
@@ -151,13 +155,12 @@ export default async function handler(req, res) {
             ? song.image[song.image.length - 1].url 
             : "";
 
-        // Properly structure the response without cutting off
         const filteredResponse = {
             Title: cleanHTML(song.name),
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-            StreamLinks: song.downloadUrl ||[]
+                 StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
