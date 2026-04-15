@@ -35,14 +35,6 @@ const videoQualities = {
   '399': '1080p AV1'
 };
 
-function getAudioQuality(itag) {
-  return audioQualities[itag] || `Unknown Audio (itag: ${itag})`;
-}
-
-function getVideoQuality(itag) {
-  return videoQualities[itag] || `Unknown Video (itag: ${itag})`;
-}
-
 export default async function handler(req, res) {
   // ==========================================
   // 1. ALLOW CORS
@@ -61,80 +53,110 @@ export default async function handler(req, res) {
   }
 
   // ==========================================
-  // 2. PARSE REQUEST & FETCH SIMULTANEOUSLY
+  // 2. PARSE REQUEST & FETCH LOGS SIMULTANEOUSLY
   // ==========================================
   const { id } = req.query;
   if (!id) {
     return res.status(400).json({ error: "Missing 'id' parameter (e.g., /api/cnd?id=yThYwOixjYg)" });
   }
 
-  const waitTimes =[5, 6, 8];
+  const waitTimes = [3, 4]; // Updated to use only 3 and 4
   const baseUrl = "https://serverayush.vercel.app/api/capture";
   const targetUrl = `https://inv.nadeko.net/watch?v=${id}?autoplay=1`;
 
   try {
-    // Fire 3 requests simultaneously with different wait times
+    // Fire 2 requests simultaneously
     const fetchPromises = waitTimes.map(wait => {
-      // Encode URL to make sure &wait doesn't interfere with the target URL params
       const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=${wait}`;
       return fetch(fetchUrl)
         .then(response => response.json())
-        .catch(() => null); // Catch errors so one failure doesn't break Promise.all
+        .catch(() => null); // Catch errors individually
     });
 
     const results = await Promise.all(fetchPromises);
 
     // ==========================================
-    // 3. EXTRACT AND DEDUPLICATE LINKS
+    // 3. FIND DASH MANIFEST URL FROM LOGS
     // ==========================================
+    let manifestUrl = null;
+
+    for (const data of results) {
+      if (data && data.logs && Array.isArray(data.logs)) {
+        for (const log of data.logs) {
+          if (log.url && log.url.includes('/api/manifest/dash/id/')) {
+            manifestUrl = log.url;
+            break; // Found the target URL, break inner loop
+          }
+        }
+      }
+      if (manifestUrl) break; // Break outer loop if found
+    }
+
+    if (!manifestUrl) {
+      return res.status(404).json({ error: "Could not find DASH manifest (.bin) URL in network logs." });
+    }
+
+    // ==========================================
+    // 4. FETCH AND PARSE THE XML MANIFEST
+    // ==========================================
+    const manifestResponse = await fetch(manifestUrl);
+    if (!manifestResponse.ok) {
+      return res.status(500).json({ error: "Failed to fetch the DASH manifest XML data." });
+    }
+    const manifestXml = await manifestResponse.text();
+
+    // Extract the origin domain (e.g., https://inv-us5.nadeko.net)
+    const domain = new URL(manifestUrl).origin;
+
     let extractedData = {
       audio: {},
       video: {}
     };
 
-    results.forEach(data => {
-      // Ensure logs array exists
-      if (data && data.logs && Array.isArray(data.logs)) {
-        data.logs.forEach(log => {
-          // Check if it's a media playback link
-          if (log.url && log.url.includes('videoplayback')) {
-            try {
-              const urlObj = new URL(log.url);
-              const itag = urlObj.searchParams.get('itag');
-              const mime = urlObj.searchParams.get('mime');
+    // Regex to extract `<Representation id="140" ...> ... <BaseURL>url...</BaseURL>`
+    // Supports ids with letters (like "140-drc" for Stable Volume)
+    const representationRegex = /<Representation\s+(?:[^>]*\s+)?id="([a-zA-Z0-9-]+)"[^>]*>[\s\S]*?<BaseURL>(.*?)<\/BaseURL>/gi;
+    let match;
 
-              if (itag && mime) {
-                // If it contains audio map to audio, if video map to video
-                // Deduplicate by overwriting 'itag' keys so we don't return clones
-                if (mime.includes('audio')) {
-                  extractedData.audio[itag] = {
-                    quality: getAudioQuality(itag),
-                    url: log.url
-                  };
-                } else if (mime.includes('video')) {
-                  extractedData.video[itag] = {
-                    quality: getVideoQuality(itag),
-                    url: log.url
-                  };
-                }
-              }
-            } catch (err) {
-              // Ignore invalid URLs
-            }
-          }
-        });
+    while ((match = representationRegex.exec(manifestXml)) !== null) {
+      const rawItag = match[1]; // e.g. "140" or "140-drc"
+      const baseItag = rawItag.split('-')[0]; // Gets the pure itag number (e.g., "140")
+      let relativeUrl = match[2];
+
+      // Decode XML encoded characters (like &amp; to &)
+      relativeUrl = relativeUrl.replace(/&amp;/g, '&')
+                               .replace(/&lt;/g, '<')
+                               .replace(/&gt;/g, '>')
+                               .replace(/&quot;/g, '"')
+                               .replace(/&apos;/g, "'");
+
+      // Construct final URL using the same domain
+      const fullUrl = relativeUrl.startsWith('http') ? relativeUrl : domain + relativeUrl;
+
+      // Group into Audio or Video based on the pure itag number
+      if (audioQualities[baseItag]) {
+        const qualityName = audioQualities[baseItag];
+        extractedData.audio[rawItag] = {
+          quality: rawItag.includes('drc') ? `${qualityName} (Stable Volume)` : qualityName,
+          url: fullUrl
+        };
+      } else if (videoQualities[baseItag]) {
+        const qualityName = videoQualities[baseItag];
+        extractedData.video[rawItag] = {
+          quality: rawItag.includes('drc') ? `${qualityName} (Stable Volume)` : qualityName,
+          url: fullUrl
+        };
       }
-    });
+    }
 
     // ==========================================
-    // 4. FORMAT RESPONSE
+    // 5. FORMAT FINAL RESPONSE
     // ==========================================
     const finalOutput = {
       Audio: Object.values(extractedData.audio),
       Video: Object.values(extractedData.video)
     };
 
-    // Return final JSON
     return res.status(200).json(finalOutput);
 
   } catch (error) {
