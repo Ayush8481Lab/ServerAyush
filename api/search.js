@@ -8,81 +8,120 @@ export default async function handler(req, res) {
     let { q, artist } = req.query;
     if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
 
-    // 1. Helper: Clean HTML and Normalize
+    // Helper: Unescape HTML entities from API outputs
     const cleanHTML = (str) => str ? str.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&rsquo;/g, "'") : "";
     
-    // Normalize: lowercase and remove symbols (keeps only alphanumeric)
-    const normalize = (str) => cleanHTML(str).toLowerCase().replace(/[^a-z0-9]/g, '');
+    // EXACT cleaning logic from your HTML version
+    const clean = (s) => cleanHTML(s || "").toLowerCase().replace(/[^\w\s]|_/g, "").replace(/\s+/g, " ").trim();
 
     try {
-        // 2. Dual-Format Search Construction
-        // We search with both Song + Artist to ensure the API returns the correct pool of songs
-        const searchQuery = artist ? `${q} ${artist}` : q;
-        const targetApi = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(cleanHTML(searchQuery))}`;
+        // ==========================================
+        // 2 CONCURRENT QUERIES AS REQUESTED
+        // ==========================================
         
-        const response = await fetch(targetApi);
-        const data = await response.json();
+        // Query 1: Exactly like "?query=Koi Sehri Babu&artist=Shruti Rane, Bombay Raja"
+        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(q)}${artist ? `&artist=${encodeURIComponent(artist)}` : ""}`;
+        
+        // Query 2: Exactly like "?query=Koi Sehri Babu Shruti Rane, Bombay Raja"
+        const searchQueryCombined = `${q} ${artist || ""}`.trim();
+        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}`;
+        
+        // Helper to fetch and safely return results array
+        const fetchResults = async (url) => {
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                return (data.success && data.data?.results) ? data.data.results :[];
+            } catch (err) {
+                return[];
+            }
+        };
 
-        if (!data.success || !data.data?.results?.length) {
-            return res.status(404).json({ error: "No matching song found." });
+        // Fetch both APIs at exactly the same time for maximum speed
+        const [results1, results2] = await Promise.all([
+            fetchResults(targetApi1),
+            fetchResults(targetApi2)
+        ]);
+
+        // Combine both responses
+        const combinedResults = [...results1, ...results2];
+
+        if (combinedResults.length === 0) {
+            return res.status(404).json({ error: "No matching song found in either query." });
         }
 
-        const results = data.data.results;
-        const targetTitleClean = normalize(q);
-        const targetArtistClean = artist ? normalize(artist) : "";
-
-        // 3. DEEP ANALYSIS SCORING
-        let highscore = -1000; // Start low to allow for penalties
-        let bestMatch = results[0];
-
-        results.forEach((song) => {
-            let score = 0;
-            const apiTitleOriginal = cleanHTML(song.name);
-            const apiTitleClean = normalize(song.name);
-            const apiArtistsClean = normalize([...song.artists.primary, ...song.artists.featured].map(a => a.name).join(' '));
-
-            // --- PRIORITY 1: TITLE MATCHING ---
-            if (apiTitleClean === targetTitleClean) {
-                score += 500; // HUGE bonus for exact string match
-            } else if (apiTitleClean.includes(targetTitleClean)) {
-                score += 100; // Partial match
+        // Deduplicate songs by ID so we don't process the same song twice
+        const uniqueResultsMap = new Map();
+        combinedResults.forEach(song => {
+            if (song && song.id && !uniqueResultsMap.has(song.id)) {
+                uniqueResultsMap.set(song.id, song);
             }
-
-            // --- PRIORITY 2: THE "REMIX" PENALTY ---
-            // If the user DID NOT search for 'remix' or 'lofi', but the result HAS 'remix' or 'lofi'
-            const keywords = ['remix', 'lofi', 'reverb', 'slowed', 'cover'];
-            keywords.forEach(word => {
-                const isWordInTarget = targetTitleClean.includes(word);
-                const isWordInApi = apiTitleClean.includes(word);
-                
-                if (isWordInApi && !isWordInTarget) {
-                    score -= 200; // Penalize "Remix" if user wanted "Original"
+        });
+        
+        const results = Array.from(uniqueResultsMap.values());
+        
+        // ==========================================
+        // EXACT MATCHING LOGIC EXTRACTED FROM HTML
+        // ==========================================
+        const tTitle = clean(q); 
+        const tArtist = clean(artist);
+        
+        let bestMatch = null; 
+        let highestScore = 0;
+        
+        results.forEach(song => {
+            if (!song) return;
+            
+            const rTitle = clean(song.name); 
+            
+            // Extract artists safely from JioSaavn structure
+            const primaryArtists = song.artists?.primary ||[];
+            const featuredArtists = song.artists?.featured || [];
+            const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
+            
+            let score = 0; 
+            let artistMatched = false;
+            
+            // Artist matching
+            if (tArtist.length > 0) {
+                for (let ra of rArtists) { 
+                    if (ra === tArtist) { 
+                        score += 100; artistMatched = true; break; 
+                    } else if (ra.includes(tArtist) || tArtist.includes(ra)) { 
+                        score += 80; artistMatched = true; break; 
+                    } 
                 }
-            });
-
-            // --- PRIORITY 3: ARTIST MATCHING ---
-            if (targetArtistClean) {
-                if (apiArtistsClean.includes(targetArtistClean)) {
-                    score += 150;
-                }
+                if (!artistMatched) score = 0;
+            } else { 
+                score += 50; 
             }
-
-            // --- PRIORITY 4: LENGTH PROXIMITY ---
-            // An original song title is usually shorter than "Song Name (From Movie) [Remix]"
-            // We favor the one closest in length to our query
-            const lengthDiff = Math.abs(apiTitleClean.length - targetTitleClean.length);
-            score -= lengthDiff; // Smaller difference = higher score
-
-            // Update winner
-            if (score > highscore) {
-                highscore = score;
-                bestMatch = song;
+            
+            // Title matching
+            if (score > 0) { 
+                if (rTitle === tTitle) score += 100; 
+                else if (rTitle.startsWith(tTitle) || tTitle.startsWith(rTitle)) score += 80; 
+                else if (rTitle.includes(tTitle)) score += 50; 
+            }
+            
+            // Set Best Match
+            if (score > highestScore) { 
+                highestScore = score; 
+                bestMatch = song; 
             }
         });
 
-        // 4. Final Response Construction
+        // If score is 0, no valid match was found
+        if (highestScore === 0 || !bestMatch) {
+            return res.status(404).json({ error: "No exact match found." });
+        }
+
+        // ==========================================
+        // RESPONSE FORMATTING
+        // ==========================================
         const song = bestMatch;
-        const allArtists = [...song.artists.primary, ...song.artists.featured]
+        const primaryArtists = song.artists?.primary ||[];
+        const featuredArtists = song.artists?.featured || [];
+        const allArtists = [...primaryArtists, ...featuredArtists]
             .map(a => cleanHTML(a.name))
             .join(", ");
 
@@ -95,7 +134,7 @@ export default async function handler(req, res) {
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-            StreamLinks: song.downloadUrl || []
+            StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
@@ -104,4 +143,4 @@ export default async function handler(req, res) {
     } catch (error) {
         return res.status(500).json({ error: "Internal Server Error" });
     }
-}
+            }
