@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     let { q, artist } = req.query;
     if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
 
-    // Ensure no trailing spaces cause issues in the URL
+    // Ensure absolutely no trailing spaces cause issues in the URL
     const safeQ = q.trim();
     const safeArtist = artist ? artist.trim() : "";
 
@@ -44,7 +44,7 @@ export default async function handler(req, res) {
         };
 
         // Fetch both APIs at exactly the same time
-        const [results1, results2] = await Promise.all([
+        const[results1, results2] = await Promise.all([
             fetchResults(targetApi1),
             fetchResults(targetApi2)
         ]);
@@ -52,10 +52,14 @@ export default async function handler(req, res) {
         // ==========================================
         // 2. MIX BOTH RESPONSES AND DEDUPLICATE
         // ==========================================
-        const combinedResults = [...results1, ...results2];
+        const combinedResults =[...results1, ...results2];
 
         if (combinedResults.length === 0) {
-            return res.status(404).json({ error: "No matching song found in either query." });
+            return res.status(404).json({ 
+                Debug_Q1: targetApi1,
+                Debug_Q2: targetApi2,
+                error: "No matching song found in either query."
+            });
         }
 
         const uniqueResultsMap = new Map();
@@ -85,8 +89,8 @@ export default async function handler(req, res) {
             const rTitle = clean(song.name); 
             
             // Extract artists safely from JioSaavn structure
-            const primaryArtists = song.artists?.primary || [];
-            const featuredArtists = song.artists?.featured ||[];
+            const primaryArtists = song.artists?.primary ||[];
+            const featuredArtists = song.artists?.featured || [];
             const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
@@ -138,15 +142,19 @@ export default async function handler(req, res) {
         });
 
         if (highestScore === 0 || !bestMatch) {
-            return res.status(404).json({ error: "No exact match found." });
+            return res.status(404).json({ 
+                Debug_Q1: targetApi1,
+                Debug_Q2: targetApi2,
+                error: "No exact match found."
+            });
         }
 
         // ==========================================
         // 4. RESPONSE FORMATTING
         // ==========================================
         const song = bestMatch;
-        const primaryArtists = song.artists?.primary ||[];
-        const featuredArtists = song.artists?.featured || [];
+        const primaryArtists = song.artists?.primary || [];
+        const featuredArtists = song.artists?.featured ||[];
         const allArtists = [...primaryArtists, ...featuredArtists]
             .map(a => cleanHTML(a.name))
             .join(", ");
@@ -155,12 +163,15 @@ export default async function handler(req, res) {
             ? song.image[song.image.length - 1].url 
             : "";
 
+        // Debug URLs placed at the very top of the JSON response
         const filteredResponse = {
+            Debug_Q1: targetApi1,
+            Debug_Q2: targetApi2,
             Title: cleanHTML(song.name),
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-                 StreamLinks: song.downloadUrl ||[]
+            StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
