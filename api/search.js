@@ -40,6 +40,12 @@ export default async function handler(req, res) {
     const safeQ = formatForApi(q);
     const safeArtist = formatForApi(artist);
 
+    // Custom URI encoder that preserves &quot; exactly as &quot; in the URL string 
+    // so the target API parses it correctly without being double-encoded to %26quot%3B
+    const encodeForApiURL = (str) => {
+        return encodeURIComponent(str).replace(/%26quot%3B/g, '&quot;');
+    };
+
     // Helper: Unescape HTML entities from API outputs
     const cleanHTML = (str) => {
         return str ? str.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&rsquo;/g, "'") : "";
@@ -53,26 +59,26 @@ export default async function handler(req, res) {
         // 1. PERFORM 2 CONCURRENT QUERIES
         // ==========================================
         
-        // Query 1: Exactly ?query=SongName&artist=ArtistName (Quotes replaced with &quot;)
-        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}` : ""}`;
+        // Query 1: Exactly ?query=SongName&artist=ArtistName (Quotes strictly as &quot;)
+        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeForApiURL(safeQ)}${safeArtist ? `&artist=${encodeForApiURL(safeArtist)}` : ""}`;
         
         // Query 2: Exactly ?query=SongName ArtistName
         const searchQueryCombined = `${safeQ} ${safeArtist}`.trim();
-        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}`;
+        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeForApiURL(searchQueryCombined)}`;
         
         // Helper to fetch and safely return results array
         const fetchResults = async (url) => {
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                return (data.success && data.data?.results) ? data.data.results : [];
+                return (data.success && data.data?.results) ? data.data.results :[];
             } catch (err) {
-                return[];
+                return [];
             }
         };
 
         // Fetch both APIs at exactly the same time
-        const [results1, results2] = await Promise.all([
+        const[results1, results2] = await Promise.all([
             fetchResults(targetApi1),
             fetchResults(targetApi2)
         ]);
@@ -80,7 +86,7 @@ export default async function handler(req, res) {
         // ==========================================
         // 2. MIX BOTH RESPONSES AND DEDUPLICATE
         // ==========================================
-        const combinedResults = [...results1, ...results2];
+        const combinedResults =[...results1, ...results2];
 
         if (combinedResults.length === 0) {
             return res.status(404).json({ error: "No matching song found in either query." });
@@ -120,7 +126,7 @@ export default async function handler(req, res) {
             // Extract artists safely from JioSaavn structure
             const primaryArtists = song.artists?.primary ||[];
             const featuredArtists = song.artists?.featured || [];
-            const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
+            const rArtists =[...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
             
@@ -223,7 +229,7 @@ export default async function handler(req, res) {
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-           StreamLinks: song.downloadUrl ||[]
+          StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
