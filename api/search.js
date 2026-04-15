@@ -8,16 +8,20 @@ export default async function handler(req, res) {
     let { q, artist } = req.query;
     if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
 
-    // Ensure absolutely no trailing spaces cause issues in the URL
-    const safeQ = q.trim();
-    const safeArtist = artist ? artist.trim() : "";
+    // BUG FIX: Replace double quotes with &quot; so the target API understands the query properly
+    const formatForApi = (str) => {
+        return str ? str.replace(/"/g, '&quot;').trim() : "";
+    };
+
+    const safeQ = formatForApi(q);
+    const safeArtist = formatForApi(artist);
 
     // Helper: Unescape HTML entities from API outputs
     const cleanHTML = (str) => {
         return str ? str.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&rsquo;/g, "'") : "";
     };
     
-    // EXACT cleaning logic: lowercase, remove special characters, trim spaces
+    // EXACT cleaning logic for deep matching: lowercase, remove special characters, trim spaces
     const clean = (s) => cleanHTML(s || "").toLowerCase().replace(/[^\w\s]|_/g, "").replace(/\s+/g, " ").trim();
 
     try {
@@ -25,26 +29,26 @@ export default async function handler(req, res) {
         // 1. PERFORM 2 CONCURRENT QUERIES
         // ==========================================
         
-        // Query 1: Exactly ?query=SongName&artist=ArtistName (NO blank spaces before &)
-        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}&page=1` : ""}`;
+        // Query 1: Exactly ?query=SongName&artist=ArtistName (Quotes replaced with &quot;)
+        const targetApi1 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(safeQ)}${safeArtist ? `&artist=${encodeURIComponent(safeArtist)}` : ""}`;
         
         // Query 2: Exactly ?query=SongName ArtistName
         const searchQueryCombined = `${safeQ} ${safeArtist}`.trim();
-        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}&page=1`;
+        const targetApi2 = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(searchQueryCombined)}`;
         
         // Helper to fetch and safely return results array
         const fetchResults = async (url) => {
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                return (data.success && data.data?.results) ? data.data.results : [];
+                return (data.success && data.data?.results) ? data.data.results :[];
             } catch (err) {
                 return[];
             }
         };
 
         // Fetch both APIs at exactly the same time
-        const[results1, results2] = await Promise.all([
+        const [results1, results2] = await Promise.all([
             fetchResults(targetApi1),
             fetchResults(targetApi2)
         ]);
@@ -52,14 +56,10 @@ export default async function handler(req, res) {
         // ==========================================
         // 2. MIX BOTH RESPONSES AND DEDUPLICATE
         // ==========================================
-        const combinedResults =[...results1, ...results2];
+        const combinedResults = [...results1, ...results2];
 
         if (combinedResults.length === 0) {
-            return res.status(404).json({ 
-                Debug_Q1: targetApi1,
-                Debug_Q2: targetApi2,
-                error: "No matching song found in either query."
-            });
+            return res.status(404).json({ error: "No matching song found in either query." });
         }
 
         const uniqueResultsMap = new Map();
@@ -89,9 +89,9 @@ export default async function handler(req, res) {
             const rTitle = clean(song.name); 
             
             // Extract artists safely from JioSaavn structure
-            const primaryArtists = song.artists?.primary ||[];
+            const primaryArtists = song.artists?.primary || [];
             const featuredArtists = song.artists?.featured || [];
-            const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
+            const rArtists =[...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
             
@@ -142,19 +142,15 @@ export default async function handler(req, res) {
         });
 
         if (highestScore === 0 || !bestMatch) {
-            return res.status(404).json({ 
-                Debug_Q1: targetApi1,
-                Debug_Q2: targetApi2,
-                error: "No exact match found."
-            });
+            return res.status(404).json({ error: "No exact match found." });
         }
 
         // ==========================================
         // 4. RESPONSE FORMATTING
         // ==========================================
         const song = bestMatch;
-        const primaryArtists = song.artists?.primary || [];
-        const featuredArtists = song.artists?.featured ||[];
+        const primaryArtists = song.artists?.primary ||[];
+        const featuredArtists = song.artists?.featured || [];
         const allArtists = [...primaryArtists, ...featuredArtists]
             .map(a => cleanHTML(a.name))
             .join(", ");
@@ -163,10 +159,7 @@ export default async function handler(req, res) {
             ? song.image[song.image.length - 1].url 
             : "";
 
-        // Debug URLs placed at the very top of the JSON response
         const filteredResponse = {
-            Debug_Q1: targetApi1,
-            Debug_Q2: targetApi2,
             Title: cleanHTML(song.name),
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
