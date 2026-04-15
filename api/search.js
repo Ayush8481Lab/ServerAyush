@@ -1,4 +1,4 @@
-// Levenshtein distance similarity (returns a value from 0.0 to 1.0)
+   // Levenshtein distance similarity (returns a value from 0.0 to 1.0)
 const getLevenshteinSimilarity = (s1, s2) => {
     if (!s1 || !s2) return 0;
     if (s1 === s2) return 1;
@@ -72,7 +72,7 @@ export default async function handler(req, res) {
         };
 
         // Fetch both APIs at exactly the same time
-        const[results1, results2] = await Promise.all([
+        const [results1, results2] = await Promise.all([
             fetchResults(targetApi1),
             fetchResults(targetApi2)
         ]);
@@ -80,7 +80,7 @@ export default async function handler(req, res) {
         // ==========================================
         // 2. MIX BOTH RESPONSES AND DEDUPLICATE
         // ==========================================
-        const combinedResults =[...results1, ...results2];
+        const combinedResults = [...results1, ...results2];
 
         if (combinedResults.length === 0) {
             return res.status(404).json({ error: "No matching song found in either query." });
@@ -114,9 +114,9 @@ export default async function handler(req, res) {
             const rTitle = clean(rTitleOriginal); 
             
             // Extract artists safely from JioSaavn structure
-            const primaryArtists = song.artists?.primary || [];
-            const featuredArtists = song.artists?.featured ||[];
-            const rArtists = [...primaryArtists, ...featuredArtists].map(a => clean(a.name));
+            const primaryArtists = song.artists?.primary ||[];
+            const featuredArtists = song.artists?.featured || [];
+            const rArtists =[...primaryArtists, ...featuredArtists].map(a => clean(a.name));
             
             let score = 0; 
             
@@ -148,8 +148,7 @@ export default async function handler(req, res) {
             // Max similarity across direct character match and token overlap match
             const maxTitleSim = Math.max(sim1, sim2, wordSimQuery, wordSimTarget);
             
-            // STRICT CONDITION: Must be STRICTLY greater than 70%
-            // "Better to not give instead of incorrect"
+            // STRICT CONDITION 1: Must be STRICTLY greater than 70% match
             if (maxTitleSim <= 0.70) {
                 return; // Skips to the next iteration. Completely ignore this track.
             }
@@ -157,7 +156,7 @@ export default async function handler(req, res) {
             // Base title score based on similarity
             score += (maxTitleSim * 100);
             
-            // --- Artist Matching (DEEP ANALYSIS) ---
+            // --- Artist Matching (STRICT FILTERING AFTER TITLE) ---
             if (tArtistsArray.length > 0) {
                 let matchedAtLeastOneArtist = false;
                 
@@ -179,9 +178,10 @@ export default async function handler(req, res) {
                     }
                 }
                 
-                // If ZERO artists matched out of the long list, penalize heavily.
+                // STRICT CONDITION 2: If an artist is provided in query, at least ONE must match.
+                // If it fails to match at least one artist, completely reject this song.
                 if (!matchedAtLeastOneArtist) {
-                    score -= 50;
+                    return; // Disqualifies the track entirely.
                 }
             } else { 
                 score += 50; // Base score if no artist was provided in query
@@ -194,9 +194,9 @@ export default async function handler(req, res) {
             }
         });
 
-        // Modified check strictly refusing any match passing through with a <=0 score
+        // Refusing any match passing through with a <=0 score
         if (highestScore <= 0 || !bestMatch) {
-            return res.status(404).json({ error: "No exact match found. (Strict >70% filtering enabled)" });
+            return res.status(404).json({ error: "No exact match found. (Strict constraints applied: >70% Title & At Least 1 Artist Match)" });
         }
 
         // ==========================================
@@ -218,7 +218,7 @@ export default async function handler(req, res) {
             Artists: allArtists || "Unknown Artist",
             Bannerlink: bestBanner,
             PermaUrl: song.url,
-             StreamLinks: song.downloadUrl ||[]
+            StreamLinks: song.downloadUrl ||[]
         };
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate');
