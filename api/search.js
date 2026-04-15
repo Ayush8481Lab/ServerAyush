@@ -8,13 +8,15 @@ export default async function handler(req, res) {
     let { q, artist } = req.query;
     if (!q) return res.status(400).json({ error: "Missing query parameter 'q'" });
 
-    // 1. Better Decoding & Normalization
+    // 1. Helper: Clean HTML and Normalize
     const cleanHTML = (str) => str ? str.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#039;/g, "'").replace(/&rsquo;/g, "'") : "";
     
-    // Normalize for comparison: lowercase and remove symbols, but keep letters/numbers
+    // Normalize: lowercase and remove symbols (keeps only alphanumeric)
     const normalize = (str) => cleanHTML(str).toLowerCase().replace(/[^a-z0-9]/g, '');
 
     try {
+        // 2. Dual-Format Search Construction
+        // We search with both Song + Artist to ensure the API returns the correct pool of songs
         const searchQuery = artist ? `${q} ${artist}` : q;
         const targetApi = `https://ayushm-psi.vercel.app/api/search/songs?query=${encodeURIComponent(cleanHTML(searchQuery))}`;
         
@@ -29,47 +31,65 @@ export default async function handler(req, res) {
         const targetTitleClean = normalize(q);
         const targetArtistClean = artist ? normalize(artist) : "";
 
-        // 2. SCORING SYSTEM (Deep Analysis)
-        let highscore = -1;
+        // 3. DEEP ANALYSIS SCORING
+        let highscore = -1000; // Start low to allow for penalties
         let bestMatch = results[0];
 
         results.forEach((song) => {
-            let currentScore = 0;
+            let score = 0;
+            const apiTitleOriginal = cleanHTML(song.name);
             const apiTitleClean = normalize(song.name);
             const apiArtistsClean = normalize([...song.artists.primary, ...song.artists.featured].map(a => a.name).join(' '));
 
-            // TITLE SCORING (Priority 1)
+            // --- PRIORITY 1: TITLE MATCHING ---
             if (apiTitleClean === targetTitleClean) {
-                currentScore += 100; // Perfect Title match
-            } else if (apiTitleClean.includes(targetTitleClean) || targetTitleClean.includes(apiTitleClean)) {
-                currentScore += 50; // Partial Title match
+                score += 500; // HUGE bonus for exact string match
+            } else if (apiTitleClean.includes(targetTitleClean)) {
+                score += 100; // Partial match
             }
 
-            // ARTIST SCORING (Priority 2)
+            // --- PRIORITY 2: THE "REMIX" PENALTY ---
+            // If the user DID NOT search for 'remix' or 'lofi', but the result HAS 'remix' or 'lofi'
+            const keywords = ['remix', 'lofi', 'reverb', 'slowed', 'cover'];
+            keywords.forEach(word => {
+                const isWordInTarget = targetTitleClean.includes(word);
+                const isWordInApi = apiTitleClean.includes(word);
+                
+                if (isWordInApi && !isWordInTarget) {
+                    score -= 200; // Penalize "Remix" if user wanted "Original"
+                }
+            });
+
+            // --- PRIORITY 3: ARTIST MATCHING ---
             if (targetArtistClean) {
-                if (apiArtistsClean.includes(targetArtistClean) || targetArtistClean.includes(apiArtistsClean)) {
-                    currentScore += 30; // Artist match
+                if (apiArtistsClean.includes(targetArtistClean)) {
+                    score += 150;
                 }
             }
 
-            // Update best match if this score is higher
-            if (currentScore > highscore) {
-                highscore = currentScore;
+            // --- PRIORITY 4: LENGTH PROXIMITY ---
+            // An original song title is usually shorter than "Song Name (From Movie) [Remix]"
+            // We favor the one closest in length to our query
+            const lengthDiff = Math.abs(apiTitleClean.length - targetTitleClean.length);
+            score -= lengthDiff; // Smaller difference = higher score
+
+            // Update winner
+            if (score > highscore) {
+                highscore = score;
                 bestMatch = song;
             }
         });
 
-        // 3. Format Final Response using the Winner
+        // 4. Final Response Construction
         const song = bestMatch;
         const allArtists = [...song.artists.primary, ...song.artists.featured]
             .map(a => cleanHTML(a.name))
             .join(", ");
 
-        const bestBanner = song.image && song.image.length > 0 
+        const bestBanner = (song.image && song.image.length > 0) 
             ? song.image[song.image.length - 1].url 
             : "";
 
-        // Use the original name from the API so we don't lose "(From Dhurandhar)"
         const filteredResponse = {
             Title: cleanHTML(song.name),
             Artists: allArtists || "Unknown Artist",
