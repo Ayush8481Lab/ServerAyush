@@ -28,11 +28,16 @@ export default async function handler(req, res) {
   let browser = null;
 
   try {
+    // Because you are using the minified Sparticuz, we MUST pass the URL to the Chromium pack.
+    // Sparticuz will download this file to /tmp during the cold start.
+    // NOTE: If you experience GitHub rate limiting in production, host this .tar file on an S3 bucket and use your own URL!
+    const chromiumPackUrl = 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.tar';
+
     // Launch headless Chromium customized for serverless/constrained environments
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      executablePath: await chromium.executablePath(chromiumPackUrl), // <-- FIX IS HERE
       headless: chromium.headless,
       ignoreHTTPSErrors: true,
     });
@@ -92,7 +97,7 @@ export default async function handler(req, res) {
       Link: stream.url
     }));
 
-    const audioStreams =[];
+    const audioStreams = [];
     const videoStreams =[];
 
  // 2. Process Adaptive Formats (Separating Audio-only and Video-only)
