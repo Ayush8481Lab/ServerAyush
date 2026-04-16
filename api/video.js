@@ -1,11 +1,5 @@
-import puppeteerCore from 'puppeteer-core';
-import { addExtra } from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
-
-// Apply the stealth plugin to puppeteer-core to bypass anti-bot protection
-const puppeteer = addExtra(puppeteerCore);
-puppeteer.use(StealthPlugin());
 
 export default async function handler(req, res) {
   // --- START CORS CONFIGURATION ---
@@ -21,7 +15,7 @@ export default async function handler(req, res) {
   }
   // --- END CORS CONFIGURATION ---
 
-  // Force Vercel API network to NEVER cache this response
+  // Force API network to NEVER cache this response
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, s-maxage=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -37,13 +31,12 @@ export default async function handler(req, res) {
   let browser = null;
 
   try {
-    // CORRECTED URL: Added .x64 to the tar file name to fix the 404 error
     const executablePath = await chromium.executablePath(
       "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
     );
 
     browser = await puppeteer.launch({
-      args:[...chromium.args, '--incognito'],
+      args: [...chromium.args, '--incognito'],
       executablePath: executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
@@ -57,21 +50,47 @@ export default async function handler(req, res) {
     await page.setCacheEnabled(false);
     await page.setBypassServiceWorker(true);
 
-    // Send CDP Commands to wipe any lingering network cache
     const client = await page.target().createCDPSession();
     await client.send('Network.clearBrowserCache');
     await client.send('Network.clearBrowserCookies');
 
-    // Delete the Service Worker API so Cloudflare/Site cannot use offline cache
+    // =======================================================================
+    // MANUAL STEALTH BYPASS: Replaces puppeteer-extra-plugin-stealth entirely
+    // =======================================================================
+    
+    // 1. Spoof a real Windows Chrome User-Agent (Removes "Headless")
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    
+    // 2. Inject fake browser variables to fool Cloudflare's JS Challenge
     await page.evaluateOnNewDocument(() => {
+      // Overwrite webdriver
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      
+      // Delete ServiceWorker to stop Site/Cloudflare offline caching
       Object.defineProperty(navigator, 'serviceWorker', { get: () => undefined });
+      
+      // Mock window.chrome
+      window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
+      
+      // Mock plugins and languages
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      
+      // Mock permissions (Cloudflare sometimes checks this)
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission }) :
+          originalQuery(parameters)
+      );
     });
+    // =======================================================================
 
-    // We DO NOT block scripts/iframes here because Cloudflare's JS challenge requires them to pass.
+    // We DO NOT block JS/CSS here because Cloudflare's JS challenge requires them.
     await page.setRequestInterception(true);
     page.on('request', (request) => {
       const resourceType = request.resourceType();
-      // Only block media and images to save memory, allow JS/document/fonts for Cloudflare
+      // Only block media and images to save memory
       if (['image', 'media'].includes(resourceType)) {
         request.abort();
       } else {
@@ -79,15 +98,17 @@ export default async function handler(req, res) {
       }
     });
 
-    // Navigate to the URL
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Add a timestamp cache-buster so Cloudflare executes fresh
+    const finalUrl = targetUrl.includes('?') ? `${targetUrl}&_cb=${Date.now()}` : `${targetUrl}?_cb=${Date.now()}`;
 
-    // Cloudflare will likely show a challenge page first. 
-    // We wait until the page's body contains valid JSON, which means the challenge has passed.
+    // Navigate to the URL
+    await page.goto(finalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Wait until the page's body contains valid JSON, meaning the challenge has passed.
     await page.waitForFunction(() => {
       const text = document.body.innerText;
       try {
-        JSON.parse(text); // If this succeeds, it means Cloudflare redirected to the real JSON API
+        JSON.parse(text); 
         return true;
       } catch (e) {
         return false;
@@ -101,13 +122,16 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(content);
     } catch (err) {
-      // If we still can't parse it, Cloudflare blocked us completely
       if (browser) await browser.close();
       return res.status(403).json({ 
         error: 'Cloudflare blocked the request or the challenge timed out.',
         raw_response: content.substring(0, 300) 
       });
     }
+
+    // Close the browser to free up memory
+    if (browser) await browser.close();
+    browser = null;
 
     // Helper function to format bytes into readable MB
     const formatSize = (bytes) => {
@@ -135,9 +159,6 @@ export default async function handler(req, res) {
 
     const audioStreams =[];
     const videoStreams =[];
-
-
-
  // 2. Process Adaptive Formats (Separating Audio-only and Video-only)
     (data.adaptiveFormats ||[]).forEach(stream => {
       if (stream.type && stream.type.startsWith('audio/')) {
