@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // Set CORS headers to allow requests from frontend browsers
+  // Set CORS headers to allow requests from your frontend
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
@@ -14,15 +14,37 @@ export default async function handler(req, res) {
 
   // Check if ID is provided
   if (!id) {
-    return res.status(400).json({ error: 'Video ID is required. Usage: /api/video?id=YOUR_VIDEO_ID' });
+    return res.status(400).json({ error: 'Video ID is required. Usage: /api/video?id=VIDEO_ID' });
   }
 
+  const targetUrl = `https://inv.thepixora.com/api/v1/videos/${id}`;
+
+  // Extensive headers to spoof a real Chrome browser and bypass Cloudflare 403 Forbidden
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://inv.thepixora.com/',
+    'Origin': 'https://inv.thepixora.com',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'Connection': 'keep-alive',
+    'Cache-Control': 'max-age=0'
+  };
+
   try {
-    // Fetch data from the Invidious API
-    const response = await fetch(`https://inv.thepixora.com/api/v1/videos/${id}`);
+    const response = await fetch(targetUrl, { headers, method: 'GET' });
+
+    // Check if Cloudflare is still blocking the request
+    if (response.status === 403) {
+      return res.status(403).json({ 
+        error: 'Cloudflare blocked the request (403 Forbidden). The API requires a Javascript challenge.' 
+      });
+    }
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: 'Failed to fetch video data' });
+      return res.status(response.status).json({ error: `API request failed with status: ${response.status}` });
     }
 
     const data = await response.json();
@@ -44,17 +66,17 @@ export default async function handler(req, res) {
       return "Unknown";
     };
 
-    // 1. Process Video with Audio (formatStreams)
+    // 1. Process Video with Audio
     const videoWithAudio = (data.formatStreams ||[]).map(stream => ({
       Quality: stream.qualityLabel || stream.resolution || stream.quality || "Unknown",
       Size: formatSize(stream.clen),
       Link: stream.url
     }));
 
-    const audioStreams = [];
+    const audioStreams =[];
     const videoStreams =[];
 
-    // 2. Process Adaptive Formats (Separating Audio-only and Video-only)
+ // 2. Process Adaptive Formats (Separating Audio-only and Video-only)
     (data.adaptiveFormats ||[]).forEach(stream => {
       if (stream.type && stream.type.startsWith('audio/')) {
         audioStreams.push({
