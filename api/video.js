@@ -1,3 +1,10 @@
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import chromium from '@sparticuz/chromium-min';
+
+// Apply the stealth plugin to bypass anti-bot protection
+puppeteer.use(StealthPlugin());
+
 export default async function handler(req, res) {
   // Set CORS headers to allow requests from your frontend
   res.setHeader('Access-Control-Allow-Credentials', true);
@@ -18,36 +25,48 @@ export default async function handler(req, res) {
   }
 
   const targetUrl = `https://inv.thepixora.com/api/v1/videos/${id}`;
-
-  // Extensive headers to spoof a real Chrome browser and bypass Cloudflare 403 Forbidden
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://inv.thepixora.com/',
-    'Origin': 'https://inv.thepixora.com',
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    'Connection': 'keep-alive',
-    'Cache-Control': 'max-age=0'
-  };
+  let browser = null;
 
   try {
-    const response = await fetch(targetUrl, { headers, method: 'GET' });
+    // Launch headless Chromium customized for serverless/constrained environments
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
+    });
 
-    // Check if Cloudflare is still blocking the request
-    if (response.status === 403) {
+    const page = await browser.newPage();
+
+    // Navigate to the URL
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Cloudflare will likely show a challenge page first. 
+    // We wait until the page's body contains valid JSON, which means the challenge has passed.
+    await page.waitForFunction(() => {
+      const text = document.body.innerText;
+      try {
+        JSON.parse(text); // If this succeeds, it means Cloudflare redirected to the real JSON API
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }, { timeout: 20000 }).catch(() => {}); // Wait up to 20 seconds for the challenge
+
+    // Extract the raw text from the page
+    const content = await page.evaluate(() => document.body.innerText);
+
+    let data;
+    try {
+      data = JSON.parse(content);
+    } catch (err) {
+      // If we still can't parse it, Cloudflare blocked us completely
       return res.status(403).json({ 
-        error: 'Cloudflare blocked the request (403 Forbidden). The API requires a Javascript challenge.' 
+        error: 'Cloudflare blocked the request or the challenge timed out.',
+        raw_response: content.substring(0, 300) 
       });
     }
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: `API request failed with status: ${response.status}` });
-    }
-
-    const data = await response.json();
 
     // Helper function to format bytes into readable MB
     const formatSize = (bytes) => {
