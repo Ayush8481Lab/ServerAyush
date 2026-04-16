@@ -110,7 +110,7 @@ export default async function handler(req, res) {
   const maxRetryTime = 15000; // 15 seconds
   
   while (Date.now() - startTime < maxRetryTime) {
-    let waits = v === '1' ? [5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
+    let waits = v === '1' ? [5, 5, 5, 7, 7] :[3, 3, 3, 5, 5];
     let targetUrl = v === '1' 
       ? `https://inv.nadeko.net/watch?v=${id}?autoplay=1` 
       : `https://yt.chocolatemoo53.com/watch?v=${id}`;
