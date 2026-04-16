@@ -57,6 +57,20 @@ const videoQualities = { // Video Only
   '571': '4320p60 AV1 (8K)'
 };
 
+// Helper: Extract content length (clen) and format as MB
+const formatSize = (url) => {
+  try {
+    const clen = new URL(url).searchParams.get('clen');
+    if (clen) {
+      const mb = parseInt(clen, 10) / (1024 * 1024);
+      return `${mb.toFixed(2)} MB`;
+    }
+  } catch (err) {
+    // Ignore invalid URL parse errors
+  }
+  return 'Unknown';
+};
+
 export default async function handler(req, res) {
   // ==========================================
   // 1. ALLOW CORS
@@ -77,17 +91,17 @@ export default async function handler(req, res) {
   // ==========================================
   // 2. PARSE REQUEST
   // ==========================================
-  const { id } = req.query;
+  const { id, v } = req.query; // Capture 'v' param
   if (!id) {
     return res.status(400).json({ error: "Missing 'id' parameter (e.g., /api/cnd?id=yThYwOixjYg)" });
   }
 
-  const waitTimes = [3, 4];
   const baseUrl = "https://serverayush.vercel.app/api/capture";
-  const targetUrl = `https://inv.nadeko.net/watch?v=${id}?autoplay=1`;
 
   let manifestUrl = null;
-  let rawVideoplaybackUrls =[]; // Store regular logs for muxed (Video+Audio) links
+  let rawVideoplaybackUrls =[]; 
+  let checkParam = null;
+  let compHost = null;
 
   // ==========================================
   // 3. AUTO-RETRY LOGIC (UP TO 20 SECONDS)
@@ -96,11 +110,24 @@ export default async function handler(req, res) {
   const maxRetryTime = 20000; // 20 seconds
   
   while (Date.now() - startTime < maxRetryTime) {
-    // Fire 2 requests simultaneously (wait=3 and wait=4)
-    const fetchPromises = waitTimes.map(wait => {
-      const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=${wait}`;
-      return fetch(fetchUrl).then(response => response.json()).catch(() => null);
-    });
+    let fetchPromises =[];
+
+    if (v === '2') {
+      // VERSION 2: Fire 5 requests simultaneously with wait=0 using new domain
+      const targetUrl = `https://yt.chocolatemoo53.com/watch?v=${id}`;
+      fetchPromises = Array.from({ length: 5 }, () => {
+        const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=0`;
+        return fetch(fetchUrl).then(response => response.json()).catch(() => null);
+      });
+    } else {
+      // VERSION 1 (Default): Old domain, delays: [3, 4, 5, 6, 8]
+      const targetUrl = `https://inv.nadeko.net/watch?v=${id}?autoplay=1`;
+      const waitTimes =[3, 4, 5, 6, 8];
+      fetchPromises = waitTimes.map(wait => {
+        const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=${wait}`;
+        return fetch(fetchUrl).then(response => response.json()).catch(() => null);
+      });
+    }
 
     const results = await Promise.all(fetchPromises);
 
@@ -109,11 +136,16 @@ export default async function handler(req, res) {
       if (data && data.logs && Array.isArray(data.logs)) {
         for (const log of data.logs) {
           if (log.url) {
-            // Find DASH manifest
+            // Find DASH manifest and extract the host and 'check' parameter
             if (log.url.includes('/api/manifest/dash/id/')) {
               manifestUrl = log.url;
+              try {
+                const mUrlObj = new URL(manifestUrl);
+                checkParam = mUrlObj.searchParams.get('check');
+                compHost = mUrlObj.origin; // e.g. https://yt-comp6.chocolatemoo53.com
+              } catch (e) { /* ignore parse error */ }
             }
-            // Find regular media streams (helps find muxed itag=18 or 22)
+            // Find regular media streams
             if (log.url.includes('videoplayback')) {
               rawVideoplaybackUrls.push(log.url);
             }
@@ -125,7 +157,7 @@ export default async function handler(req, res) {
     // If we found the manifest, we can stop retrying!
     if (manifestUrl) break;
 
-    // Optional: wait 1 second before retrying to prevent spamming your API
+    // Wait 1 second before retrying to prevent spamming your API
     if (Date.now() - startTime < maxRetryTime) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
@@ -154,6 +186,7 @@ export default async function handler(req, res) {
         if (itag && muxedQualities[itag]) {
           extractedData.videoWithAudio[itag] = {
             quality: muxedQualities[itag],
+            size: formatSize(url),
             url: url
           };
         }
@@ -166,7 +199,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Found manifest URL, but failed to download the XML data." });
     }
     const manifestXml = await manifestResponse.text();
-    const domain = new URL(manifestUrl).origin; // e.g. https://inv-us5.nadeko.net
+    const domain = new URL(manifestUrl).origin; // Base domain for relative links
 
     // Regex to extract `<Representation id="140" ...> ... <BaseURL>url...</BaseURL>`
     const representationRegex = /<Representation\s+(?:[^>]*\s+)?id="([a-zA-Z0-9-]+)"[^>]*>[\s\S]*?<BaseURL>(.*?)<\/BaseURL>/gi;
@@ -187,22 +220,64 @@ export default async function handler(req, res) {
       // Construct absolute URL
       const fullUrl = relativeUrl.startsWith('http') ? relativeUrl : domain + relativeUrl;
       const isStableVolume = rawItag.includes('drc') ? ' (Stable Volume)' : '';
+      const streamSize = formatSize(fullUrl);
 
       // Categorize extracted link
       if (audioQualities[baseItag]) {
         extractedData.audio[rawItag] = {
           quality: audioQualities[baseItag] + isStableVolume,
+          size: streamSize,
           url: fullUrl
         };
       } else if (videoQualities[baseItag]) {
         extractedData.video[rawItag] = {
           quality: videoQualities[baseItag] + isStableVolume,
+          size: streamSize,
           url: fullUrl
         };
       } else if (muxedQualities[baseItag]) {
         extractedData.videoWithAudio[rawItag] = {
           quality: muxedQualities[baseItag] + isStableVolume,
+          size: streamSize,
           url: fullUrl
+        };
+      }
+    }
+
+    // --- C. V2 EXCLUSIVE: Generate & Resolve Redirect Links ---
+    if (v === '2' && checkParam && compHost) {
+      
+      // Helper to fetch the redirect target to get the final videoplayback URL
+      const getRedirectUrl = async (itag) => {
+        const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
+        try {
+          // A standard GET request. Fetch auto-follows 302 redirects 
+          // returning the resolved final destination URL inside `res.url`.
+          const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
+          if (res.url && res.url.includes('videoplayback')) {
+            return res.url;
+          }
+        } catch (e) { /* ignore network error on redirect tracking */ }
+        return null;
+      };
+
+      // Try for standard 360p combined stream
+      const itag18Url = await getRedirectUrl('18');
+      if (itag18Url) {
+        extractedData.videoWithAudio['18'] = {
+          quality: muxedQualities['18'],
+          size: formatSize(itag18Url),
+          url: itag18Url
+        };
+      }
+
+      // Try for standard 720p combined stream (if available)
+      const itag22Url = await getRedirectUrl('22');
+      if (itag22Url) {
+        extractedData.videoWithAudio['22'] = {
+          quality: muxedQualities['22'],
+          size: formatSize(itag22Url),
+          url: itag22Url
         };
       }
     }
