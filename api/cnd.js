@@ -110,7 +110,7 @@ export default async function handler(req, res) {
   const maxRetryTime = 15000; // 15 seconds
   
   while (Date.now() - startTime < maxRetryTime) {
-    let waits = v === '1' ?[5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
+    let waits = v === '1' ? [5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
     let targetUrl = v === '1' 
       ? `https://inv.nadeko.net/watch?v=${id}?autoplay=1` 
       : `https://yt.chocolatemoo53.com/watch?v=${id}`;
@@ -312,45 +312,47 @@ export default async function handler(req, res) {
     // ==========================================
     // 5. FORMAT FINAL RESPONSE
     // ==========================================
-    const finalOutput = {
-      VideoWithAudio: Object.values(extractedData.videoWithAudio),
-      Audio:[],
-      Video: Object.values(extractedData.video)
-    };
-
-    // If lis=true was passed, process the custom Audio array sorting
     if (lis === 'true') {
-      // 1. Sort custom requested itags by priority
+      // Create explicit 4-section object
+      const lisOutput = {
+        VideoWithAudio: Object.values(extractedData.videoWithAudio),
+        Audio:[],
+        DefaultAudio:[],
+        Video: Object.values(extractedData.video)
+      };
+
+      // 1. Sort custom requested itags by priority and push to 'Audio'
       const lisOrder = { '251': 1, '140': 2, '250': 3 };
       lisResults.sort((a, b) => (lisOrder[a.itag] || 99) - (lisOrder[b.itag] || 99));
 
-      const lisFetchedItags = new Set();
       lisResults.forEach(item => {
-        finalOutput.Audio.push({
+        lisOutput.Audio.push({
           quality: item.quality,
           size: item.size,
           url: item.url
         });
-        lisFetchedItags.add(item.itag);
       });
 
-      // 2. Add remaining manifest audio (excluding the duplicates we just fetched) labeled as Default
+      // 2. Put all audio found natively in the manifest into 'DefaultAudio'
       Object.entries(extractedData.audio).forEach(([rawItag, data]) => {
-        const baseItag = rawItag.split('-')[0];
-        if (!lisFetchedItags.has(baseItag)) {
-          finalOutput.Audio.push({
-            quality: `Default - ${data.quality}`,
-            size: data.size,
-            url: data.url
-          });
-        }
+        lisOutput.DefaultAudio.push({
+          quality: data.quality,
+          size: data.size,
+          url: data.url
+        });
       });
-    } else {
-      // Standard behavior
-      finalOutput.Audio = Object.values(extractedData.audio);
-    }
 
-    return res.status(200).json(finalOutput);
+      return res.status(200).json(lisOutput);
+    } else {
+      // Standard 3-section output for when lis is false or not provided
+      const standardOutput = {
+        VideoWithAudio: Object.values(extractedData.videoWithAudio),
+        Audio: Object.values(extractedData.audio),
+        Video: Object.values(extractedData.video)
+      };
+
+      return res.status(200).json(standardOutput);
+    }
 
   } catch (error) {
     return res.status(500).json({ error: "Internal Server Error", details: error.message });
