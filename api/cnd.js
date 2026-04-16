@@ -104,57 +104,58 @@ export default async function handler(req, res) {
   let compHost = null;
 
   // ==========================================
-  // 3. AUTO-RETRY LOGIC (UP TO 20 SECONDS)
+  // 3. AUTO-RETRY & EARLY EXIT LOGIC (15 SECONDS)
   // ==========================================
   const startTime = Date.now();
-  const maxRetryTime = 20000; // 20 seconds
+  const maxRetryTime = 15000; // 15 seconds
   
   while (Date.now() - startTime < maxRetryTime) {
-    let fetchPromises =[];
+    let waits = v === '1' ? [5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
+    let targetUrl = v === '1' 
+      ? `https://inv.nadeko.net/watch?v=${id}?autoplay=1` 
+      : `https://yt.chocolatemoo53.com/watch?v=${id}`;
 
-    if (v === '2') {
-      // VERSION 2: Fire 5 requests simultaneously with wait=0 using new domain
-      const targetUrl = `https://yt.chocolatemoo53.com/watch?v=${id}`;
-      fetchPromises = Array.from({ length: 5 }, () => {
-        const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=0`;
-        return fetch(fetchUrl).then(response => response.json()).catch(() => null);
-      });
-    } else {
-      // VERSION 1 (Default): Old domain, delays: [3, 4, 5, 6, 8]
-      const targetUrl = `https://inv.nadeko.net/watch?v=${id}?autoplay=1`;
-      const waitTimes =[3, 4, 5, 6, 8];
-      fetchPromises = waitTimes.map(wait => {
+    // FAST LATENCY: We await a custom promise that resolves IMMEDIATELY the moment
+    // any of the 5 concurrent requests finds the manifestUrl.
+    await new Promise((resolve) => {
+      let resolvedCount = 0;
+      waits.forEach(wait => {
         const fetchUrl = `${baseUrl}?url=${encodeURIComponent(targetUrl)}&wait=${wait}`;
-        return fetch(fetchUrl).then(response => response.json()).catch(() => null);
+        fetch(fetchUrl)
+          .then(response => response.json())
+          .then(data => {
+            if (data && data.logs && Array.isArray(data.logs)) {
+              for (const log of data.logs) {
+                if (log.url) {
+                  // Find DASH manifest and extract the host and 'check' parameter
+                  if (log.url.includes('/api/manifest/dash/id/')) {
+                    manifestUrl = log.url;
+                    try {
+                      const mUrlObj = new URL(manifestUrl);
+                      checkParam = mUrlObj.searchParams.get('check');
+                      compHost = mUrlObj.origin; // e.g. https://yt-comp6.chocolatemoo53.com
+                    } catch (e) { /* ignore parse error */ }
+                  }
+                  // Find regular media streams
+                  if (log.url.includes('videoplayback')) {
+                    rawVideoplaybackUrls.push(log.url);
+                  }
+                }
+              }
+            }
+          })
+          .catch(() => null)
+          .finally(() => {
+            resolvedCount++;
+            // Early Exit condition: If we found manifestUrl OR all requests completed
+            if (manifestUrl || resolvedCount === waits.length) {
+              resolve();
+            }
+          });
       });
-    }
+    });
 
-    const results = await Promise.all(fetchPromises);
-
-    // Scan logs for manifest and standalone videoplayback URLs
-    for (const data of results) {
-      if (data && data.logs && Array.isArray(data.logs)) {
-        for (const log of data.logs) {
-          if (log.url) {
-            // Find DASH manifest and extract the host and 'check' parameter
-            if (log.url.includes('/api/manifest/dash/id/')) {
-              manifestUrl = log.url;
-              try {
-                const mUrlObj = new URL(manifestUrl);
-                checkParam = mUrlObj.searchParams.get('check');
-                compHost = mUrlObj.origin; // e.g. https://yt-comp6.chocolatemoo53.com
-              } catch (e) { /* ignore parse error */ }
-            }
-            // Find regular media streams
-            if (log.url.includes('videoplayback')) {
-              rawVideoplaybackUrls.push(log.url);
-            }
-          }
-        }
-      }
-    }
-
-    // If we found the manifest, we can stop retrying!
+    // If we found the manifest via the early exit logic, break out of retry loop!
     if (manifestUrl) break;
 
     // Wait 1 second before retrying to prevent spamming your API
@@ -163,9 +164,9 @@ export default async function handler(req, res) {
     }
   }
 
-  // Check if we ultimately failed after 20 seconds
+  // Check if we ultimately failed after 15 seconds
   if (!manifestUrl) {
-    return res.status(404).json({ error: "Could not find DASH manifest (.bin) after retrying for 20 seconds." });
+    return res.status(404).json({ error: "Could not find DASH manifest (.bin) after retrying for 15 seconds." });
   }
 
   // ==========================================
@@ -177,6 +178,9 @@ export default async function handler(req, res) {
       video: {},
       videoWithAudio: {}
     };
+    
+    let extractedItags = new Set(); // Tracks successfully parsed itags
+    let aitagsList = new Set();     // Tracks all available itags found in URLs
 
     // --- A. Process regular logs for "Video With Audio" (itag 18, 22) ---
     rawVideoplaybackUrls.forEach(url => {
@@ -189,6 +193,7 @@ export default async function handler(req, res) {
             size: formatSize(url),
             url: url
           };
+          extractedItags.add(itag);
         }
       } catch (err) { /* ignore invalid URLs */ }
     });
@@ -222,6 +227,20 @@ export default async function handler(req, res) {
       const isStableVolume = rawItag.includes('drc') ? ' (Stable Volume)' : '';
       const streamSize = formatSize(fullUrl);
 
+      // Track the itag we just extracted
+      extractedItags.add(baseItag);
+
+      // Look for the `aitags` parameter to discover missing formats (like 400, 401)
+      if (fullUrl.includes('aitags=')) {
+        try {
+          const uObj = new URL(fullUrl);
+          const aitagsStr = uObj.searchParams.get('aitags');
+          if (aitagsStr) {
+            aitagsStr.split(',').forEach(t => aitagsList.add(t));
+          }
+        } catch (e) { /* ignore parse error */ }
+      }
+
       // Categorize extracted link
       if (audioQualities[baseItag]) {
         extractedData.audio[rawItag] = {
@@ -244,42 +263,41 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- C. V2 EXCLUSIVE: Generate & Resolve Redirect Links ---
+    // --- C. DYNAMIC AITAGS RESOLVER (Fetch missing High-Res/Muxed streams concurrently) ---
     if (v === '2' && checkParam && compHost) {
+      // Force addition of standard 18 and 22 into aitagsList to try to fetch them natively
+      aitagsList.add('18');
+      aitagsList.add('22');
+
+      // Identify which itags we know about but haven't successfully loaded yet
+      const missingItags = Array.from(aitagsList).filter(itag => !extractedItags.has(itag));
       
-      // Helper to fetch the redirect target to get the final videoplayback URL
-      const getRedirectUrl = async (itag) => {
+      // Filter out weird or unsupported itags to avoid wasteful requests
+      const validMissingItags = missingItags.filter(itag => 
+        audioQualities[itag] || videoQualities[itag] || muxedQualities[itag]
+      );
+
+      // Fetch all missing itags concurrently to keep latency at absolute minimum
+      const missingItagPromises = validMissingItags.map(async (itag) => {
         const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
         try {
-          // A standard GET request. Fetch auto-follows 302 redirects 
-          // returning the resolved final destination URL inside `res.url`.
+          // fetch() natively follows standard 302 redirects 
           const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
           if (res.url && res.url.includes('videoplayback')) {
-            return res.url;
+            const streamSize = formatSize(res.url);
+
+            if (audioQualities[itag]) {
+              extractedData.audio[itag] = { quality: audioQualities[itag], size: streamSize, url: res.url };
+            } else if (videoQualities[itag]) {
+              extractedData.video[itag] = { quality: videoQualities[itag], size: streamSize, url: res.url };
+            } else if (muxedQualities[itag]) {
+              extractedData.videoWithAudio[itag] = { quality: muxedQualities[itag], size: streamSize, url: res.url };
+            }
           }
-        } catch (e) { /* ignore network error on redirect tracking */ }
-        return null;
-      };
+        } catch (e) { /* ignore network errors for isolated fallback fetches */ }
+      });
 
-      // Try for standard 360p combined stream
-      const itag18Url = await getRedirectUrl('18');
-      if (itag18Url) {
-        extractedData.videoWithAudio['18'] = {
-          quality: muxedQualities['18'],
-          size: formatSize(itag18Url),
-          url: itag18Url
-        };
-      }
-
-      // Try for standard 720p combined stream (if available)
-      const itag22Url = await getRedirectUrl('22');
-      if (itag22Url) {
-        extractedData.videoWithAudio['22'] = {
-          quality: muxedQualities['22'],
-          size: formatSize(itag22Url),
-          url: itag22Url
-        };
-      }
+      await Promise.all(missingItagPromises);
     }
 
     // ==========================================
