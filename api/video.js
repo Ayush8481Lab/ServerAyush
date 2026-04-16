@@ -1,21 +1,30 @@
-import puppeteer from 'puppeteer-extra';
+import puppeteerCore from 'puppeteer-core';
+import { addExtra } from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import chromium from '@sparticuz/chromium-min';
 
-// Apply the stealth plugin to bypass anti-bot protection
+// Apply the stealth plugin to puppeteer-core to bypass anti-bot protection
+const puppeteer = addExtra(puppeteerCore);
 puppeteer.use(StealthPlugin());
 
 export default async function handler(req, res) {
-  // Set CORS headers to allow requests from your frontend
+  // --- START CORS CONFIGURATION ---
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
 
   // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
+  // --- END CORS CONFIGURATION ---
+
+  // Force Vercel API network to NEVER cache this response
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, s-maxage=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 
   const { id } = req.query;
 
@@ -28,21 +37,47 @@ export default async function handler(req, res) {
   let browser = null;
 
   try {
-    // Because you are using the minified Sparticuz, we MUST pass the URL to the Chromium pack.
-    // Sparticuz will download this file to /tmp during the cold start.
-    // NOTE: If you experience GitHub rate limiting in production, host this .tar file on an S3 bucket and use your own URL!
-    const chromiumPackUrl = 'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.tar';
+    // CORRECTED URL: Added .x64 to the tar file name to fix the 404 error
+    const executablePath = await chromium.executablePath(
+      "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
+    );
 
-    // Launch headless Chromium customized for serverless/constrained environments
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(chromiumPackUrl), // <-- FIX IS HERE
+      args:[...chromium.args, '--incognito'],
+      executablePath: executablePath,
       headless: chromium.headless,
+      defaultViewport: chromium.defaultViewport,
       ignoreHTTPSErrors: true,
     });
 
-    const page = await browser.newPage();
+    const pages = await browser.pages();
+    const page = pages.length > 0 ? pages[0] : await browser.newPage();
+
+    // Disable cache
+    await page.setCacheEnabled(false);
+    await page.setBypassServiceWorker(true);
+
+    // Send CDP Commands to wipe any lingering network cache
+    const client = await page.target().createCDPSession();
+    await client.send('Network.clearBrowserCache');
+    await client.send('Network.clearBrowserCookies');
+
+    // Delete the Service Worker API so Cloudflare/Site cannot use offline cache
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'serviceWorker', { get: () => undefined });
+    });
+
+    // We DO NOT block scripts/iframes here because Cloudflare's JS challenge requires them to pass.
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const resourceType = request.resourceType();
+      // Only block media and images to save memory, allow JS/document/fonts for Cloudflare
+      if (['image', 'media'].includes(resourceType)) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
 
     // Navigate to the URL
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -57,7 +92,7 @@ export default async function handler(req, res) {
       } catch (e) {
         return false;
       }
-    }, { timeout: 20000 }).catch(() => {}); // Wait up to 20 seconds for the challenge
+    }, { timeout: 25000 }).catch(() => {}); // Wait up to 25 seconds for the challenge
 
     // Extract the raw text from the page
     const content = await page.evaluate(() => document.body.innerText);
@@ -67,6 +102,7 @@ export default async function handler(req, res) {
       data = JSON.parse(content);
     } catch (err) {
       // If we still can't parse it, Cloudflare blocked us completely
+      if (browser) await browser.close();
       return res.status(403).json({ 
         error: 'Cloudflare blocked the request or the challenge timed out.',
         raw_response: content.substring(0, 300) 
@@ -80,7 +116,7 @@ export default async function handler(req, res) {
       return `${mb} MB`;
     };
 
-    // Helper function to clean up audio quality strings (e.g., AUDIO_QUALITY_MEDIUM -> Medium)
+    // Helper function to clean up audio quality strings
     const formatAudioQuality = (q, sampleRate) => {
       if (q) {
         const cleaned = q.replace('AUDIO_QUALITY_', '').toLowerCase();
@@ -97,8 +133,10 @@ export default async function handler(req, res) {
       Link: stream.url
     }));
 
-    const audioStreams = [];
+    const audioStreams =[];
     const videoStreams =[];
+
+
 
  // 2. Process Adaptive Formats (Separating Audio-only and Video-only)
     (data.adaptiveFormats ||[]).forEach(stream => {
