@@ -110,7 +110,7 @@ export default async function handler(req, res) {
   const maxRetryTime = 15000; // 15 seconds
   
   while (Date.now() - startTime < maxRetryTime) {
-    let waits = v === '1' ? [5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
+    let waits = v === '1' ?[5, 5, 5, 7, 7] :[0, 0, 0, 0, 0];
     let targetUrl = v === '1' 
       ? `https://inv.nadeko.net/watch?v=${id}?autoplay=1` 
       : `https://yt.chocolatemoo53.com/watch?v=${id}`;
@@ -242,13 +242,15 @@ export default async function handler(req, res) {
       if (lis === 'true' && checkParam && compHost) {
         // Defined custom mapping for LIS requests
         const lisItags =[
-          { itag: '251', quality: 'higher' },
-          { itag: '140', quality: 'medium' },
-          { itag: '250', quality: 'low' }
+          { itag: '251', quality: 'High' },
+          { itag: '140', quality: 'Medium' },
+          { itag: '250', quality: 'Low' }
         ];
         
         await Promise.all(lisItags.map(async ({ itag, quality }) => {
-          const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
+          // Add local=true specifically if v=1
+          const localParam = v === '1' ? '&local=true' : '';
+          const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}${localParam}&check=${checkParam}`;
           try {
             const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
             if (res.url && res.url.includes('videoplayback')) {
@@ -273,10 +275,22 @@ export default async function handler(req, res) {
       aitagsList.add('22');
 
       const missingItags = Array.from(aitagsList).filter(itag => !extractedItags.has(itag));
-      const validMissingItags = missingItags.filter(itag => audioQualities[itag] || videoQualities[itag] || muxedQualities[itag]);
+      
+      // Filter logic: Check if it's a valid known quality
+      const validMissingItags = missingItags.filter(itag => {
+        // If lis=true, skip 2K, 4K, 8K to save latency
+        if (lis === 'true') {
+          const q = videoQualities[itag] || '';
+          if (q.includes('1440p') || q.includes('2160p') || q.includes('4320p') || q.includes('4K') || q.includes('8K')) {
+            return false;
+          }
+        }
+        return audioQualities[itag] || videoQualities[itag] || muxedQualities[itag];
+      });
 
       const missingItagPromises = validMissingItags.map(async (itag) => {
-        const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
+        const localParam = v === '1' ? '&local=true' : '';
+        const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}${localParam}&check=${checkParam}`;
         try {
           const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
           if (res.url && res.url.includes('videoplayback')) {
@@ -320,11 +334,15 @@ export default async function handler(req, res) {
         lisFetchedItags.add(item.itag);
       });
 
-      // 2. Add remaining manifest audio (excluding the duplicates we just fetched)
+      // 2. Add remaining manifest audio (excluding the duplicates we just fetched) labeled as Default
       Object.entries(extractedData.audio).forEach(([rawItag, data]) => {
         const baseItag = rawItag.split('-')[0];
         if (!lisFetchedItags.has(baseItag)) {
-          finalOutput.Audio.push(data);
+          finalOutput.Audio.push({
+            quality: `Default - ${data.quality}`,
+            size: data.size,
+            url: data.url
+          });
         }
       });
     } else {
