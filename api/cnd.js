@@ -91,7 +91,7 @@ export default async function handler(req, res) {
   // ==========================================
   // 2. PARSE REQUEST
   // ==========================================
-  const { id, v } = req.query; // Capture 'v' param
+  const { id, v, lis } = req.query; // Capture 'v' and 'lis' params
   if (!id) {
     return res.status(400).json({ error: "Missing 'id' parameter (e.g., /api/cnd?id=yThYwOixjYg)" });
   }
@@ -115,8 +115,7 @@ export default async function handler(req, res) {
       ? `https://inv.nadeko.net/watch?v=${id}?autoplay=1` 
       : `https://yt.chocolatemoo53.com/watch?v=${id}`;
 
-    // FAST LATENCY: We await a custom promise that resolves IMMEDIATELY the moment
-    // any of the 5 concurrent requests finds the manifestUrl.
+    // FAST LATENCY: Resolve IMMEDIATELY the moment ANY concurrent request finds the manifestUrl.
     await new Promise((resolve) => {
       let resolvedCount = 0;
       waits.forEach(wait => {
@@ -127,7 +126,7 @@ export default async function handler(req, res) {
             if (data && data.logs && Array.isArray(data.logs)) {
               for (const log of data.logs) {
                 if (log.url) {
-                  // Find DASH manifest and extract the host and 'check' parameter
+                  // Find DASH manifest and extract host & 'check' parameter
                   if (log.url.includes('/api/manifest/dash/id/')) {
                     manifestUrl = log.url;
                     try {
@@ -147,7 +146,7 @@ export default async function handler(req, res) {
           .catch(() => null)
           .finally(() => {
             resolvedCount++;
-            // Early Exit condition: If we found manifestUrl OR all requests completed
+            // Early Exit condition
             if (manifestUrl || resolvedCount === waits.length) {
               resolve();
             }
@@ -155,16 +154,14 @@ export default async function handler(req, res) {
       });
     });
 
-    // If we found the manifest via the early exit logic, break out of retry loop!
-    if (manifestUrl) break;
+    if (manifestUrl) break; // Break out of retry loop if found
 
-    // Wait 1 second before retrying to prevent spamming your API
+    // Wait 1 second before retrying
     if (Date.now() - startTime < maxRetryTime) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
   }
 
-  // Check if we ultimately failed after 15 seconds
   if (!manifestUrl) {
     return res.status(404).json({ error: "Could not find DASH manifest (.bin) after retrying for 15 seconds." });
   }
@@ -179,8 +176,8 @@ export default async function handler(req, res) {
       videoWithAudio: {}
     };
     
-    let extractedItags = new Set(); // Tracks successfully parsed itags
-    let aitagsList = new Set();     // Tracks all available itags found in URLs
+    let extractedItags = new Set(); 
+    let aitagsList = new Set();     
 
     // --- A. Process regular logs for "Video With Audio" (itag 18, 22) ---
     rawVideoplaybackUrls.forEach(url => {
@@ -198,94 +195,92 @@ export default async function handler(req, res) {
       } catch (err) { /* ignore invalid URLs */ }
     });
 
-    // --- B. Fetch the DASH .bin file ---
-    const manifestResponse = await fetch(manifestUrl);
-    if (!manifestResponse.ok) {
-      return res.status(500).json({ error: "Found manifest URL, but failed to download the XML data." });
-    }
-    const manifestXml = await manifestResponse.text();
-    const domain = new URL(manifestUrl).origin; // Base domain for relative links
+    // --- B. PARSE DASH MANIFEST TASK ---
+    const manifestTask = async () => {
+      const manifestResponse = await fetch(manifestUrl);
+      if (!manifestResponse.ok) return;
+      
+      const manifestXml = await manifestResponse.text();
+      const domain = new URL(manifestUrl).origin;
+      const representationRegex = /<Representation\s+(?:[^>]*\s+)?id="([a-zA-Z0-9-]+)"[^>]*>[\s\S]*?<BaseURL>(.*?)<\/BaseURL>/gi;
+      let match;
 
-    // Regex to extract `<Representation id="140" ...> ... <BaseURL>url...</BaseURL>`
-    const representationRegex = /<Representation\s+(?:[^>]*\s+)?id="([a-zA-Z0-9-]+)"[^>]*>[\s\S]*?<BaseURL>(.*?)<\/BaseURL>/gi;
-    let match;
+      while ((match = representationRegex.exec(manifestXml)) !== null) {
+        const rawItag = match[1];
+        const baseItag = rawItag.split('-')[0];
+        let relativeUrl = match[2];
 
-    while ((match = representationRegex.exec(manifestXml)) !== null) {
-      const rawItag = match[1]; // e.g., "140" or "140-drc"
-      const baseItag = rawItag.split('-')[0]; // Extract pure number (e.g., "140")
-      let relativeUrl = match[2];
+        relativeUrl = relativeUrl.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+        const fullUrl = relativeUrl.startsWith('http') ? relativeUrl : domain + relativeUrl;
+        
+        const isStableVolume = rawItag.includes('drc') ? ' (Stable Volume)' : '';
+        const streamSize = formatSize(fullUrl);
 
-      // Clean up XML-encoded characters
-      relativeUrl = relativeUrl.replace(/&amp;/g, '&')
-                               .replace(/&lt;/g, '<')
-                               .replace(/&gt;/g, '>')
-                               .replace(/&quot;/g, '"')
-                               .replace(/&apos;/g, "'");
+        extractedItags.add(baseItag);
 
-      // Construct absolute URL
-      const fullUrl = relativeUrl.startsWith('http') ? relativeUrl : domain + relativeUrl;
-      const isStableVolume = rawItag.includes('drc') ? ' (Stable Volume)' : '';
-      const streamSize = formatSize(fullUrl);
+        if (fullUrl.includes('aitags=')) {
+          try {
+            const uObj = new URL(fullUrl);
+            const aitagsStr = uObj.searchParams.get('aitags');
+            if (aitagsStr) aitagsStr.split(',').forEach(t => aitagsList.add(t));
+          } catch (e) {}
+        }
 
-      // Track the itag we just extracted
-      extractedItags.add(baseItag);
-
-      // Look for the `aitags` parameter to discover missing formats (like 400, 401)
-      if (fullUrl.includes('aitags=')) {
-        try {
-          const uObj = new URL(fullUrl);
-          const aitagsStr = uObj.searchParams.get('aitags');
-          if (aitagsStr) {
-            aitagsStr.split(',').forEach(t => aitagsList.add(t));
-          }
-        } catch (e) { /* ignore parse error */ }
+        if (audioQualities[baseItag]) {
+          extractedData.audio[rawItag] = { quality: audioQualities[baseItag] + isStableVolume, size: streamSize, url: fullUrl };
+        } else if (videoQualities[baseItag]) {
+          extractedData.video[rawItag] = { quality: videoQualities[baseItag] + isStableVolume, size: streamSize, url: fullUrl };
+        } else if (muxedQualities[baseItag]) {
+          extractedData.videoWithAudio[rawItag] = { quality: muxedQualities[baseItag] + isStableVolume, size: streamSize, url: fullUrl };
+        }
       }
+    };
 
-      // Categorize extracted link
-      if (audioQualities[baseItag]) {
-        extractedData.audio[rawItag] = {
-          quality: audioQualities[baseItag] + isStableVolume,
-          size: streamSize,
-          url: fullUrl
-        };
-      } else if (videoQualities[baseItag]) {
-        extractedData.video[rawItag] = {
-          quality: videoQualities[baseItag] + isStableVolume,
-          size: streamSize,
-          url: fullUrl
-        };
-      } else if (muxedQualities[baseItag]) {
-        extractedData.videoWithAudio[rawItag] = {
-          quality: muxedQualities[baseItag] + isStableVolume,
-          size: streamSize,
-          url: fullUrl
-        };
+    // --- C. LIS=TRUE CUSTOM AUDIO RESOLVER TASK ---
+    let lisResults =[];
+    const lisTask = async () => {
+      if (lis === 'true' && checkParam && compHost) {
+        // Defined custom mapping for LIS requests
+        const lisItags =[
+          { itag: '251', quality: 'higher' },
+          { itag: '140', quality: 'medium' },
+          { itag: '250', quality: 'low' }
+        ];
+        
+        await Promise.all(lisItags.map(async ({ itag, quality }) => {
+          const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
+          try {
+            const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
+            if (res.url && res.url.includes('videoplayback')) {
+              lisResults.push({
+                itag,
+                quality,
+                size: formatSize(res.url),
+                url: res.url
+              });
+            }
+          } catch (e) { /* ignore network error */ }
+        }));
       }
-    }
+    };
 
-    // --- C. DYNAMIC AITAGS RESOLVER (Fetch missing High-Res/Muxed streams concurrently) ---
+    // Run both Manifest Download/Parsing AND LIS Fetches simultaneously for zero added latency!
+    await Promise.all([manifestTask().catch(() => {}), lisTask().catch(() => {})]);
+
+    // --- D. DYNAMIC AITAGS RESOLVER (Fetch missing High-Res/Muxed streams concurrently) ---
     if (v === '2' && checkParam && compHost) {
-      // Force addition of standard 18 and 22 into aitagsList to try to fetch them natively
       aitagsList.add('18');
       aitagsList.add('22');
 
-      // Identify which itags we know about but haven't successfully loaded yet
       const missingItags = Array.from(aitagsList).filter(itag => !extractedItags.has(itag));
-      
-      // Filter out weird or unsupported itags to avoid wasteful requests
-      const validMissingItags = missingItags.filter(itag => 
-        audioQualities[itag] || videoQualities[itag] || muxedQualities[itag]
-      );
+      const validMissingItags = missingItags.filter(itag => audioQualities[itag] || videoQualities[itag] || muxedQualities[itag]);
 
-      // Fetch all missing itags concurrently to keep latency at absolute minimum
       const missingItagPromises = validMissingItags.map(async (itag) => {
         const redirectUrl = `${compHost}/companion/latest_version?id=${id}&itag=${itag}&check=${checkParam}`;
         try {
-          // fetch() natively follows standard 302 redirects 
           const res = await fetch(redirectUrl, { method: 'GET', redirect: 'follow' });
           if (res.url && res.url.includes('videoplayback')) {
             const streamSize = formatSize(res.url);
-
             if (audioQualities[itag]) {
               extractedData.audio[itag] = { quality: audioQualities[itag], size: streamSize, url: res.url };
             } else if (videoQualities[itag]) {
@@ -294,7 +289,7 @@ export default async function handler(req, res) {
               extractedData.videoWithAudio[itag] = { quality: muxedQualities[itag], size: streamSize, url: res.url };
             }
           }
-        } catch (e) { /* ignore network errors for isolated fallback fetches */ }
+        } catch (e) { /* ignore */ }
       });
 
       await Promise.all(missingItagPromises);
@@ -305,9 +300,37 @@ export default async function handler(req, res) {
     // ==========================================
     const finalOutput = {
       VideoWithAudio: Object.values(extractedData.videoWithAudio),
-      Audio: Object.values(extractedData.audio),
+      Audio:[],
       Video: Object.values(extractedData.video)
     };
+
+    // If lis=true was passed, process the custom Audio array sorting
+    if (lis === 'true') {
+      // 1. Sort custom requested itags by priority
+      const lisOrder = { '251': 1, '140': 2, '250': 3 };
+      lisResults.sort((a, b) => (lisOrder[a.itag] || 99) - (lisOrder[b.itag] || 99));
+
+      const lisFetchedItags = new Set();
+      lisResults.forEach(item => {
+        finalOutput.Audio.push({
+          quality: item.quality,
+          size: item.size,
+          url: item.url
+        });
+        lisFetchedItags.add(item.itag);
+      });
+
+      // 2. Add remaining manifest audio (excluding the duplicates we just fetched)
+      Object.entries(extractedData.audio).forEach(([rawItag, data]) => {
+        const baseItag = rawItag.split('-')[0];
+        if (!lisFetchedItags.has(baseItag)) {
+          finalOutput.Audio.push(data);
+        }
+      });
+    } else {
+      // Standard behavior
+      finalOutput.Audio = Object.values(extractedData.audio);
+    }
 
     return res.status(200).json(finalOutput);
 
