@@ -21,7 +21,7 @@ export default async function handler(req, res) {
     // 1. Secretly listen to all network requests
     page.on('request', (interceptedRequest) => {
       // Look specifically for Spotify's GraphQL API
-      if (interceptedRequest.url().includes('/com.htdigital.streams/tp2')) {
+      if (interceptedRequest.url().includes('com.htdigital.streams/tp2')) {
         const postData = interceptedRequest.postData();
         
         // If the request contains the search data, steal the payload!
