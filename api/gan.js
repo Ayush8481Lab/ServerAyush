@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // 1. Setup CORS
+  // 1. CORS setup so you can call this from any frontend
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -8,52 +8,69 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Please provide a search query using ?q=YOUR_SEARCH" });
   }
 
-  // TARGET API: We are using Gaana's Mobile App V1 API. 
-  // It provides the exact same data but bypasses their strict Web CloudFront WAF.
-  const targetUrl = `https://api.gaana.com/index.php?type=search&subtype=search_song&key=${encodeURIComponent(query)}`;
+  const encodedQuery = encodeURIComponent(query);
+
+  // 2. Define the Mobile API endpoints for all 4 categories
+  // We use the Mobile API because it easily bypasses the WAF blocking Vercel IPs
+  const endpoints = {
+    tracks: `https://api.gaana.com/index.php?type=search&subtype=search_song&key=${encodedQuery}`,
+    albums: `https://api.gaana.com/index.php?type=search&subtype=search_album&key=${encodedQuery}`,
+    artists: `https://api.gaana.com/index.php?type=search&subtype=search_artist&key=${encodedQuery}`,
+    playlists: `https://api.gaana.com/index.php?type=search&subtype=search_playlist&key=${encodedQuery}`
+  };
+
+  // 3. Spoof the Official Android App to stay unblocked
+  const headers = {
+    "User-Agent": "GaanaAndroidApp/5.0",
+    "Accept": "application/json, text/plain, */*",
+    "deviceId": "841f9afd-387f-44d9-bea7-b770a886ef50", 
+    "deviceType": "GaanaAndroidApp" 
+  };
 
   try {
-    const response = await fetch(targetUrl, {
-      method: "GET",
-      headers: {
-        // Standard Browser Headers
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://gaana.com",
-        "Referer": "https://gaana.com/",
-        
-        // CRUCIAL BYPASS: Gaana-specific security headers found in your logs
-        "deviceId": "841f9afd-387f-44d9-bea7-b770a886ef50", // Spoofed valid device ID
-        "deviceType": "GaanaWebsiteApp",
-        "Cookie": "deviceId=841f9afd-387f-44d9-bea7-b770a886ef50; deviceType=GaanaWebsiteApp;"
+    // Helper function to safely fetch and parse JSON
+    const fetchCategory = async (url) => {
+      try {
+        const response = await fetch(url, { method: "GET", headers });
+        // Fetch raw text first to avoid JSON parse crashing on empty responses
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+      } catch (err) {
+        return null; // Fail gracefully if one specific category errors out
       }
-    });
+    };
 
-    // 2. Fetch the raw text FIRST to prevent the "Unexpected end of JSON input" crash
-    const text = await response.text();
+    // 4. Execute all 4 searches at the exact same time (Very Fast)
+    const [tracksData, albumsData, artistsData, playlistsData] = await Promise.all([
+      fetchCategory(endpoints.tracks),
+      fetchCategory(endpoints.albums),
+      fetchCategory(endpoints.artists),
+      fetchCategory(endpoints.playlists)
+    ]);
 
-    // 3. Security Check: Did Gaana block us or return an empty body?
-    if (!response.ok) {
-      return res.status(response.status).json({ 
-        error: "Gaana blocked the request (WAF)", 
-        raw_response: text 
-      });
-    }
+    // 5. Aggregate everything into a single, clean response
+    const combinedData = {
+      success: true,
+      query: query,
+      counts: {
+        tracks: parseInt(tracksData?.count) || 0,
+        albums: parseInt(albumsData?.count) || 0,
+        artists: parseInt(artistsData?.count) || 0,
+        playlists: parseInt(playlistsData?.count) || 0
+      },
+      results: {
+        tracks: tracksData?.tracks || [],
+        albums: albumsData?.album ||[],
+        artists: artistsData?.artist || [],
+        playlists: playlistsData?.playlist ||[]
+      }
+    };
 
-    if (!text || text.trim() === "") {
-      return res.status(500).json({ 
-        error: "Gaana shadow-banned the request. Returned 0 bytes of data." 
-      });
-    }
-
-    // 4. Safely parse and return the JSON
-    const data = JSON.parse(text);
-    return res.status(200).json(data);
+    return res.status(200).json(combinedData);
 
   } catch (error) {
     return res.status(500).json({ 
-      error: "JSON Parsing Failed", 
+      error: "Failed to fetch aggregated search data", 
       details: error.message 
     });
   }
