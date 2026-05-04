@@ -1,7 +1,22 @@
-// pages/api/meta.js
+
 
 export default async function handler(req, res) {
-  // Pass: /api/meta?id=TRACK_ID&seo=SEOKEY&token=AK47_TOKEN&cid=CLIENT_ID
+  // ==========================================
+  // 0. CORS & CACHING SETUP (SUPERFAST ENHANCEMENTS)
+  // ==========================================
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*'); // Allows all domains
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  
+  // Cache at the CDN Edge for 24 hours to make repeat requests load in ~10ms
+  res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=43200');
+
+  // Handle CORS preflight request instantly
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   const { id, seo, token, cid } = req.query;
 
   if (!id && !seo) {
@@ -68,7 +83,7 @@ export default async function handler(req, res) {
     let lyricsData = { lines:[], syncType: "UNSYNCED" };
     let canvasData = null;
 
-    // Use Promise.all to fetch both APIs concurrently (Makes the API 2x Faster)
+    // Use Promise.all to fetch both APIs concurrently
     if (spotifyId && spotifyUrl) {
         const lyricsReq = fetch(`https://lyr-nine.vercel.app/api/lyrics?url=${encodeURIComponent(spotifyUrl)}&format=lrc`)
             .then(res => res.ok ? res.json() : null).catch(() => null);
@@ -76,7 +91,7 @@ export default async function handler(req, res) {
         const canvasReq = fetch(`https://ayush-gamma-coral.vercel.app/api/canvas?trackId=${spotifyId}`)
             .then(res => res.ok ? res.json() : null).catch(() => null);
 
-        const[lyricsRes, canvasRes] = await Promise.all([lyricsReq, canvasReq]);
+        const [lyricsRes, canvasRes] = await Promise.all([lyricsReq, canvasReq]);
 
         // Process Lyrics
         if (lyricsRes && lyricsRes.lines) {
@@ -127,7 +142,7 @@ const parseTimeTag = (tag) => {
   return 0;
 };
 
-// Extracted string matching algorithm adapted for the backend
+// Extracted string matching algorithm
 const performMatching = (results, targetTrack, targetArtist) => {
   if (!results || results.length === 0) return null;
   
@@ -175,6 +190,5 @@ const performMatching = (results, targetTrack, targetArtist) => {
       }
   }
   
-  // Return the best match. If the score is too low, just default to the first result
   return highestScore > 0 ? bestMatch : results[0];
 };
