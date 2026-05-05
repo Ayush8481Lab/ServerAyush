@@ -1,23 +1,52 @@
+// ==========================================
+// GLOBAL CACHE FOR SPOTIFY AUTH
+// Persists across warm invocations in Vercel
+// ==========================================
+let authCache = {
+  clientId: null,
+  accessToken: null,
+  expiryMs: 0
+};
 
+// Helper function to fetch and cache auth token
+async function getSpotifyCredentials() {
+  // Use cached token if it exists and is valid (with a 2-minute safety buffer)
+  if (authCache.accessToken && Date.now() < (authCache.expiryMs - 120000)) {
+    return authCache;
+  }
+  try {
+    const res = await fetch("https://serverayush.vercel.app/api/auth");
+    if (!res.ok) throw new Error("Failed to fetch auth");
+    const data = await res.json();
+    
+    authCache = {
+      clientId: data.clientId,
+      accessToken: data.accessToken,
+      expiryMs: data.accessTokenExpirationTimestampMs
+    };
+    return authCache;
+  } catch (error) {
+    console.error("Auth Fetch Error:", error);
+    return null;
+  }
+}
 
 export default async function handler(req, res) {
   // ==========================================
-  // 0. CORS & CACHING SETUP (SUPERFAST ENHANCEMENTS)
+  // 0. CORS & CACHING SETUP
   // ==========================================
   res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // Allows all domains
+  res.setHeader('Access-Control-Allow-Origin', '*'); 
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
-  
-  // Cache at the CDN Edge for 24 hours to make repeat requests load in ~10ms
   res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=43200');
 
-  // Handle CORS preflight request instantly
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const { id, seo, token, cid } = req.query;
+  // Now you ONLY need to pass `id` or `seo`
+  const { id, seo } = req.query;
 
   if (!id && !seo) {
     return res.status(400).json({ error: "Please provide a Gaana track id or seo key." });
@@ -36,7 +65,6 @@ export default async function handler(req, res) {
     const gaanaData = gaanaJson.data;
     if (!gaanaData) throw new Error("Track not found on Gaana");
 
-    // Extract precise Title & Artists to map with Spotify
     const decodeEntities = (t) => (t||"").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&#39;/g, "'");
     const title = decodeEntities(gaanaData.track_title || gaanaData.title || gaanaData.name || "Unknown");
     
@@ -52,77 +80,84 @@ export default async function handler(req, res) {
     const artist = artistNames.length > 0 ? decodeEntities(artistNames.join(", ")) : "Unknown Artist";
 
     // ==========================================
-    // 2. FETCH SPOTIFY MATCH (AK47 API)
+    // 2. PARALLEL PIPELINES (YOUTUBE & SPOTIFY)
     // ==========================================
-    let spotifyId = null;
-    let spotifyUrl = null;
+    
+    // Pipeline A: YouTube Video Fetcher
+    const ytQuery = `${title} ${artist} [Original Video]`.trim();
+    const youtubePromise = fetch(`https://ayushvid.vercel.app/api?q=${encodeURIComponent(ytQuery)}`)
+      .then(r => r.ok ? r.json() : null)
+      .catch(() => null);
 
-    if (token) {
-       const searchArtist = artistNames.slice(0, 2).join(' '); // Use max 2 artists for better search hit rate
-       const query = `${title} ${searchArtist}`.trim();
-       const clientIdParam = cid ? `&CID=${cid}` : ''; 
-       
-       const searchRes = await fetch(`https://ak47ayush.vercel.app/search?q=${encodeURIComponent(query)}${clientIdParam}&token=${token}&limit=10&offset=0`);
-       
-       if (searchRes.ok) {
-           const searchJson = await searchRes.json();
-           const results = searchJson.results || (searchJson.tracks && searchJson.tracks.items) ||[];
-           
-           // Fast Matcher Algorithm
-           const match = performMatching(results, title, searchArtist);
-           if (match) {
-               spotifyId = match.id || (match.spotify_url && match.spotify_url.split('/track/')[1]?.split('?')[0]) || (match.external_urls && match.external_urls.spotify?.split('/track/')[1]?.split('?')[0]);
-               spotifyUrl = match.spotify_url || (match.external_urls && match.external_urls.spotify) || `https://open.spotify.com/track/${spotifyId}`;
-           }
-       }
-    }
+    // Pipeline B: Spotify Auth -> Search -> Canvas & Lyrics
+    const spotifyPromise = getSpotifyCredentials().then(async (auth) => {
+      if (!auth || !auth.accessToken) return null;
+
+      const searchArtist = artistNames.slice(0, 2).join(' '); // Use max 2 artists for better search hit rate
+      const query = `${title} ${searchArtist}`.trim();
+      const clientIdParam = auth.clientId ? `&CID=${auth.clientId}` : ''; 
+      
+      const searchRes = await fetch(`https://ak47ayush.vercel.app/search?q=${encodeURIComponent(query)}${clientIdParam}&token=${auth.accessToken}&limit=10&offset=0`);
+      if (!searchRes.ok) return null;
+      
+      const searchJson = await searchRes.json();
+      const results = searchJson.results || (searchJson.tracks && searchJson.tracks.items) ||[];
+      const match = performMatching(results, title, searchArtist);
+      
+      if (!match) return null;
+
+      const spotifyId = match.id || (match.spotify_url && match.spotify_url.split('/track/')[1]?.split('?')[0]) || (match.external_urls && match.external_urls.spotify?.split('/track/')[1]?.split('?')[0]);
+      const spotifyUrl = match.spotify_url || (match.external_urls && match.external_urls.spotify) || `https://open.spotify.com/track/${spotifyId}`;
+
+      // Fetch Lyrics and Canvas simultaneously once Spotify Match is found
+      const lyricsReq = fetch(`https://lyr-nine.vercel.app/api/lyrics?url=${encodeURIComponent(spotifyUrl)}&format=lrc`)
+          .then(res => res.ok ? res.json() : null).catch(() => null);
+          
+      const canvasReq = fetch(`https://ayush-gamma-coral.vercel.app/api/canvas?trackId=${spotifyId}`)
+          .then(res => res.ok ? res.json() : null).catch(() => null);
+
+      const [lyricsRes, canvasRes] = await Promise.all([lyricsReq, canvasReq]);
+
+      let lyricsData = { lines:[], syncType: "UNSYNCED" };
+      if (lyricsRes && lyricsRes.lines) {
+         lyricsData = {
+            syncType: lyricsRes.syncType,
+            lines: lyricsRes.lines.map(l => ({
+               time: parseTimeTag(l.timeTag),
+               words: l.words
+            }))
+         };
+      }
+
+      let canvasData = null;
+      if (canvasRes && canvasRes.canvasesList && canvasRes.canvasesList.length > 0) {
+         canvasData = canvasRes.canvasesList[0];
+      }
+
+      return { spotifyId, spotifyUrl, lyricsData, canvasData };
+    }).catch(err => {
+      console.error("Spotify Pipeline Error:", err);
+      return null;
+    });
+
+    // Execute both pipelines simultaneously
+    const [ytData, spotifyData] = await Promise.all([youtubePromise, spotifyPromise]);
 
     // ==========================================
-    // 3. FETCH LYRICS & CANVAS SIMULTANEOUSLY
-    // ==========================================
-    let lyricsData = { lines:[], syncType: "UNSYNCED" };
-    let canvasData = null;
-
-    // Use Promise.all to fetch both APIs concurrently
-    if (spotifyId && spotifyUrl) {
-        const lyricsReq = fetch(`https://lyr-nine.vercel.app/api/lyrics?url=${encodeURIComponent(spotifyUrl)}&format=lrc`)
-            .then(res => res.ok ? res.json() : null).catch(() => null);
-            
-        const canvasReq = fetch(`https://ayush-gamma-coral.vercel.app/api/canvas?trackId=${spotifyId}`)
-            .then(res => res.ok ? res.json() : null).catch(() => null);
-
-        const [lyricsRes, canvasRes] = await Promise.all([lyricsReq, canvasReq]);
-
-        // Process Lyrics
-        if (lyricsRes && lyricsRes.lines) {
-           lyricsData = {
-              syncType: lyricsRes.syncType,
-              lines: lyricsRes.lines.map(l => ({
-                 time: parseTimeTag(l.timeTag),
-                 words: l.words
-              }))
-           };
-        }
-
-        // Process Canvas
-        if (canvasRes && canvasRes.canvasesList && canvasRes.canvasesList.length > 0) {
-           canvasData = canvasRes.canvasesList[0];
-        }
-    }
-
-    // ==========================================
-    // 4. RETURN MERGED PAYLOAD
+    // 3. RETURN MERGED PAYLOAD
     // ==========================================
     return res.status(200).json({
         success: true,
         identifiers: {
            gaana_id: trackId,
-           spotify_id: spotifyId,
-           spotify_url: spotifyUrl
+           spotify_id: spotifyData?.spotifyId || null,
+           spotify_url: spotifyData?.spotifyUrl || null,
+           youtube_video_id: ytData?.top_result?.videoId || null
         },
         track_info: gaanaData,
-        lyrics: lyricsData,
-        canvas: canvasData
+        video: ytData?.top_result || null,
+        lyrics: spotifyData?.lyricsData || { lines:[], syncType: "UNSYNCED" },
+        canvas: spotifyData?.canvasData || null
     });
 
   } catch (error) {
@@ -142,7 +177,7 @@ const parseTimeTag = (tag) => {
   return 0;
 };
 
-// Extracted string matching algorithm
+// Fast String Matching Algorithm
 const performMatching = (results, targetTrack, targetArtist) => {
   if (!results || results.length === 0) return null;
   
