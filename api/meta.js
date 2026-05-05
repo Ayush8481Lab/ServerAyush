@@ -154,7 +154,7 @@ export default async function handler(req, res) {
            spotify_url: spotifyData?.spotifyUrl || null,
            youtube_video_id: ytData?.top_result?.videoId || null
         },
-        track_info: gaanaData,
+     
         video: ytData?.top_result || null,
         lyrics: spotifyData?.lyricsData || { lines:[], syncType: "UNSYNCED" },
         canvas: spotifyData?.canvasData || null
