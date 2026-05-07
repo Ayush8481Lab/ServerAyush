@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   }
 
   // 2. Build the original Gaana URL
-  const targetUrl = `https://gaana.com/apiv2?country=IN&page=0&secType=track&type=search&keyword=${encodeURIComponent(keyword)}`;
+  const targetUrl = `https://gaana.com/search/songs${encodeURIComponent(keyword)}`;
 
   // 3. Generate a random Indian IP to hide that we are using Vercel
   const prefixes =['14.96.', '27.54.', '43.224.', '49.14.', '103.27.'];
