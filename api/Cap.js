@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     );
 
     browser = await puppeteer.launch({
-      args: [
+      args:[
         ...chromium.args,
         '--disable-blink-features=AutomationControlled', // Hides "Automation" status
         '--no-sandbox',
@@ -38,26 +38,37 @@ export default async function handler(req, res) {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
-    const networkLogs = [];
+    const networkLogs =[];
     const generateHash = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
     // Deep Network Listener
     page.on('response', async (response) => {
       try {
         const request = response.request();
+        
         const logEntry = {
           url: response.url(),
-          
+          method: request.method(),
+          type: request.resourceType(),
+          status: response.status(),
+          // NEW: Capture exact headers sent by the browser TO the server
+          requestHeaders: request.headers(), 
+          // Clarified: Capture headers sent back FROM the server
+          responseHeaders: response.headers(), 
+          sha256Hash: "n/a"
         };
 
         // Extract URL Fragment
         try { logEntry.hash = new URL(response.url()).hash; } catch (e) { logEntry.hash = ""; }
 
         // Capture Buffer for Hash (only for non-redirects)
+        // Optimization: Skip large media/images to prevent Vercel memory crashes
         if (response.status() < 300 || response.status() >= 400) {
-          const buffer = await response.buffer().catch(() => null);
-          if (buffer) {
-            logEntry.sha256Hash = generateHash(buffer);
+          if (!['image', 'media', 'font'].includes(request.resourceType())) {
+            const buffer = await response.buffer().catch(() => null);
+            if (buffer) {
+              logEntry.sha256Hash = generateHash(buffer);
+            }
           }
         }
         networkLogs.push(logEntry);
@@ -67,7 +78,6 @@ export default async function handler(req, res) {
     });
 
     // 3. BYPASS CHALLENGE: Navigate and wait for potential redirects
-    // Use 'networkidle2' to ensure the "go-away" challenge JS has finished executing
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
 
     // Extra wait for the "meta-refresh" challenge to actually redirect
