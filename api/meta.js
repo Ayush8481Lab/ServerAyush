@@ -1,13 +1,12 @@
 const crypto = require('crypto');
 
-// Decryption helper using native Node.js crypto module
+// Decryption helper
 function decryptUrl(encryptedText) {
   if (!encryptedText) return null;
   try {
     const key = Buffer.from("abcdefghijklmnop", 'utf8');
     const iv = Buffer.from("abcdefghijklmnop", 'utf8');
     
-    // Auto-adjust Base64 padding if it was truncated by the API
     let base64 = encryptedText;
     const missingPadding = base64.length % 4;
     if (missingPadding) {
@@ -22,13 +21,12 @@ function decryptUrl(encryptedText) {
     
     return decrypted.toString('utf8');
   } catch (err) {
-    // If decryption fails, return null or the original error message
     return null;
   }
 }
 
-export default async function handler(req, res) {
-  // Allow only GET requests
+// Standard CommonJS export
+module.exports = async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -36,11 +34,10 @@ export default async function handler(req, res) {
   const { id, date } = req.query;
 
   if (!id || !date) {
-    return res.status(400).json({ error: 'Missing parameters. Please provide "id" (edition ID) and "date" (dd/mm/yyyy).' });
+    return res.status(400).json({ error: 'Missing parameters. Please provide both "id" and "date".' });
   }
 
   try {
-    // 1. Fetch raw list data from Live Hindustan
     const targetUrl = `https://epaper.livehindustan.com/Home/GetAllpages?editionid=${id}&editiondate=${date}`;
     const response = await fetch(targetUrl);
     
@@ -50,7 +47,6 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    // 2. Map through pages and replace encrypted fields with direct links
     const decryptedPages = data.map(page => {
       return {
         ...page,
@@ -59,12 +55,10 @@ export default async function handler(req, res) {
       };
     });
 
-    // 3. Optional: Set edge cache headers to make subsequent requests load instantly
     res.setHeader('Cache-Control', 's-maxage=14400, stale-while-revalidate=3600');
-
     return res.status(200).json(decryptedPages);
 
   } catch (error) {
     return res.status(500).json({ error: 'Failed to process request', details: error.message });
   }
-}
+};
