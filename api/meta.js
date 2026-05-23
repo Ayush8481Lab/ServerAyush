@@ -1,6 +1,5 @@
-const crypto = require('crypto');
+import crypto from 'crypto';
 
-// Decryption helper
 function decryptUrl(encryptedText) {
   if (!encryptedText) return null;
   try {
@@ -25,8 +24,7 @@ function decryptUrl(encryptedText) {
   }
 }
 
-// Standard CommonJS export
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -34,7 +32,7 @@ module.exports = async function handler(req, res) {
   const { id, date } = req.query;
 
   if (!id || !date) {
-    return res.status(400).json({ error: 'Missing parameters. Please provide both "id" and "date".' });
+    return res.status(400).json({ error: 'Missing parameters.' });
   }
 
   try {
@@ -42,7 +40,7 @@ module.exports = async function handler(req, res) {
     const response = await fetch(targetUrl);
     
     if (!response.ok) {
-      return res.status(response.status).json({ error: `Target server responded with status: ${response.status}` });
+      return res.status(response.status).json({ error: `Target server error: ${response.status}` });
     }
 
     const data = await response.json();
@@ -61,4 +59,4 @@ module.exports = async function handler(req, res) {
   } catch (error) {
     return res.status(500).json({ error: 'Failed to process request', details: error.message });
   }
-};
+}
