@@ -12,10 +12,8 @@ export default async function handler(req, res) {
   let targetPath = "/PublicBhuApi/api/edata"; // Fallback default
   
   if (req.query && req.query.path) {
-    // Handles Method 2: ?path=PublicBhuApi/api/edata
     targetPath = req.query.path.startsWith('/') ? req.query.path : '/' + req.query.path;
   } else if (req.url) {
-    // Handles Method 1: Extracts from /api/find/PublicBhuApi/... after routing
     const cleanUrl = req.url.split('?')[0];
     if (cleanUrl.startsWith('/api/find/')) {
       targetPath = req.url.substring('/api/find'.length);
@@ -29,7 +27,36 @@ export default async function handler(req, res) {
 
   const targetUrl = `https://upbhulekh.gov.in${targetPath}`;
 
-  // 2. CONSTRUCT BROWSER-LIKE HEADERS
+  // 2. CONSTRUCT POST BODY FROM GET OR POST REQUESTS
+  let requestBody = undefined;
+
+  if (req.method === 'POST' || req.method === 'PUT') {
+    // If the client actually made a POST request, use their provided body
+    if (req.body) {
+      requestBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    }
+  } else {
+    // If the client made a GET request (browser), construct the POST payload from query parameters
+    if (req.query.body || req.query.payload) {
+      const rawPayload = req.query.body || req.query.payload;
+      try {
+        // Validate and use if it is already a JSON string
+        JSON.parse(rawPayload);
+        requestBody = rawPayload;
+      } catch (e) {
+        requestBody = JSON.stringify({ data: rawPayload });
+      }
+    } else {
+      // Collect all query parameters except the routing 'path' parameter
+      const bodyObj = { ...req.query };
+      delete bodyObj.path;
+      
+      // Send as JSON payload
+      requestBody = JSON.stringify(bodyObj);
+    }
+  }
+
+  // 3. CONSTRUCT BROWSER-LIKE HEADERS
   const incomingHeaders = req.headers || {};
   const headers = {
     "host": "upbhulekh.gov.in",
@@ -41,7 +68,7 @@ export default async function handler(req, res) {
     "accept-encoding": "gzip, deflate, br",
   };
 
-  // Forward session identifiers if present
+  // Forward optional cookies/authorization if sent
   if (incomingHeaders.cookie) {
     headers["cookie"] = incomingHeaders.cookie;
   }
@@ -49,18 +76,10 @@ export default async function handler(req, res) {
     headers["authorization"] = incomingHeaders.authorization;
   }
 
-  // 3. RETRIEVE POST BODY
-  let requestBody = undefined;
-  if (req.method === 'POST' || req.method === 'PUT') {
-    if (req.body) {
-      requestBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    }
-  }
-
   try {
-    // 4. FORWARD REQUEST
+    // 4. FORWARD TO TARGET (Forcing POST)
     const response = await fetch(targetUrl, {
-      method: req.method,
+      method: "POST", // Always force POST to UP Bhulekh
       headers: headers,
       body: requestBody,
     });
