@@ -8,21 +8,14 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 1. EXTRACT THE TARGET PATH DYNAMICALLY
+  // 1. EXTRACT THE TARGET PATH
   let targetPath = "/PublicBhuApi/api/edata"; // Fallback default
   
-  // Handle Next.js dynamic route segment [...path] if configured
   if (req.query && req.query.path) {
-    const pathArray = Array.isArray(req.query.path) ? req.query.path : [req.query.path];
-    targetPath = '/' + pathArray.join('/');
-    
-    // Re-append the query string if present
-    const queryString = req.url ? req.url.split('?')[1] : '';
-    if (queryString) {
-      targetPath += `?${queryString}`;
-    }
+    // Handles Method 2: ?path=PublicBhuApi/api/edata
+    targetPath = req.query.path.startsWith('/') ? req.query.path : '/' + req.query.path;
   } else if (req.url) {
-    // Fallback parser: extracts path directly from raw URL
+    // Handles Method 1: Extracts from /api/find/PublicBhuApi/... after routing
     const cleanUrl = req.url.split('?')[0];
     if (cleanUrl.startsWith('/api/find/')) {
       targetPath = req.url.substring('/api/find'.length);
@@ -48,7 +41,7 @@ export default async function handler(req, res) {
     "accept-encoding": "gzip, deflate, br",
   };
 
-  // Forward incoming session identifiers or cookies if they exist
+  // Forward session identifiers if present
   if (incomingHeaders.cookie) {
     headers["cookie"] = incomingHeaders.cookie;
   }
@@ -56,7 +49,7 @@ export default async function handler(req, res) {
     headers["authorization"] = incomingHeaders.authorization;
   }
 
-  // 3. RETRIEVE POST BODY DATA
+  // 3. RETRIEVE POST BODY
   let requestBody = undefined;
   if (req.method === 'POST' || req.method === 'PUT') {
     if (req.body) {
@@ -65,7 +58,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 4. FORWARD REQUEST DIRECTLY TO TARGET API
+    // 4. FORWARD REQUEST
     const response = await fetch(targetUrl, {
       method: req.method,
       headers: headers,
@@ -74,7 +67,6 @@ export default async function handler(req, res) {
 
     const responseText = await response.text();
 
-    // Map original content type header back to client
     const contentType = response.headers.get("content-type");
     if (contentType) {
       res.setHeader("Content-Type", contentType);
