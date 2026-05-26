@@ -1,101 +1,144 @@
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium-min';
+import crypto from 'crypto';
+
 export default async function handler(req, res) {
-  // Allow CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  // 1. EXTRACT THE TARGET PATH
-  let targetPath = "/PublicBhuApi/api/edata"; // Fallback default
-  
-  if (req.query && req.query.path) {
-    targetPath = req.query.path.startsWith('/') ? req.query.path : '/' + req.query.path;
-  } else if (req.url) {
-    const cleanUrl = req.url.split('?')[0];
-    if (cleanUrl.startsWith('/api/find/')) {
-      targetPath = req.url.substring('/api/find'.length);
-    } else if (cleanUrl.includes('/api/find')) {
-      const parts = req.url.split('/api/find');
-      if (parts[1]) {
-        targetPath = parts[1];
-      }
-    }
-  }
-
-  const targetUrl = `https://upbhulekh.gov.in${targetPath}`;
-
-  // 2. CONSTRUCT POST BODY FROM GET OR POST REQUESTS
-  let requestBody = undefined;
-
-  if (req.method === 'POST' || req.method === 'PUT') {
-    // If the client actually made a POST request, use their provided body
-    if (req.body) {
-      requestBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-    }
-  } else {
-    // If the client made a GET request (browser), construct the POST payload from query parameters
-    if (req.query.body || req.query.payload) {
-      const rawPayload = req.query.body || req.query.payload;
+  let body = {};
+  if (req.body) {
+    if (typeof req.body === 'string') {
       try {
-        // Validate and use if it is already a JSON string
-        JSON.parse(rawPayload);
-        requestBody = rawPayload;
-      } catch (e) {
-        requestBody = JSON.stringify({ data: rawPayload });
-      }
+        body = JSON.parse(req.body);
+      } catch (e) {}
     } else {
-      // Collect all query parameters except the routing 'path' parameter
-      const bodyObj = { ...req.query };
-      delete bodyObj.path;
-      
-      // Send as JSON payload
-      requestBody = JSON.stringify(bodyObj);
+      body = req.body;
     }
   }
 
-  // 3. CONSTRUCT BROWSER-LIKE HEADERS
-  const incomingHeaders = req.headers || {};
-  const headers = {
-    "host": "upbhulekh.gov.in",
-    "origin": "https://upbhulekh.gov.in",
-    "referer": "https://upbhulekh.gov.in/",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "accept": "application/json, text/plain, */*",
-    "content-type": "application/json",
-    "accept-encoding": "gzip, deflate, br",
-  };
+  let url = req.query.url || body.url;
+  let hash = req.query.hash || body.hash || req.query.fragment || body.fragment;
+  const wait = req.query.wait ? parseInt(req.query.wait) : (body.wait ? parseInt(body.wait) : 5);
 
-  // Forward optional cookies/authorization if sent
-  if (incomingHeaders.cookie) {
-    headers["cookie"] = incomingHeaders.cookie;
+  if (!url) {
+    return res.status(400).json({ error: "Please provide a URL." });
   }
-  if (incomingHeaders.authorization) {
-    headers["authorization"] = incomingHeaders.authorization;
+
+  if (hash) {
+    let cleanHash = hash.trim();
+    if (!cleanHash.startsWith('#')) {
+      cleanHash = '#' + cleanHash;
+    }
+    if (!url.includes('#')) {
+      url = url + cleanHash;
+    }
   }
+
+  let browser = null;
+  let capturedEdata = null; // Container to store the API response
 
   try {
-    // 4. FORWARD TO TARGET (Forcing POST)
-    const response = await fetch(targetUrl, {
-      method: "POST", // Always force POST to UP Bhulekh
-      headers: headers,
-      body: requestBody,
+    const executablePath = await chromium.executablePath(
+      "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
+    );
+
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--disable-blink-features=AutomationControlled',
+        '--no-sandbox',
+        '--disable-setuid-sandbox'
+      ],
+      executablePath: executablePath,
+      headless: chromium.headless,
+      defaultViewport: chromium.defaultViewport,
     });
 
-    const responseText = await response.text();
+    const page = await browser.newPage();
+    
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
 
-    const contentType = response.headers.get("content-type");
-    if (contentType) {
-      res.setHeader("Content-Type", contentType);
-    }
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
 
-    return res.status(response.status).send(responseText);
+    const networkLogs = [];
+    const generateHash = (data) => crypto.createHash('sha256').update(data).digest('hex');
+
+    // Deep Network Listener
+    page.on('response', async (response) => {
+      try {
+        const request = response.request();
+        const responseUrl = response.url();
+        
+        const logEntry = {
+          url: responseUrl,
+          method: request.method(),
+          type: request.resourceType(),
+          status: response.status(),
+          requestHeaders: request.headers(), 
+          responseHeaders: response.headers(), 
+          sha256Hash: "n/a",
+          capturedData: null
+        };
+
+        try { logEntry.hash = new URL(responseUrl).hash; } catch (e) { logEntry.hash = ""; }
+
+        // 1. SPECIFICALLY CAPTURE THE DATA OF THE EDATA API
+        if (responseUrl.includes('/PublicBhuApi/api/edata') && response.status() === 200) {
+          const responseText = await response.text().catch(() => null);
+          if (responseText) {
+            try {
+              capturedEdata = JSON.parse(responseText);
+              logEntry.capturedData = capturedEdata;
+            } catch (e) {
+              logEntry.capturedData = responseText;
+            }
+          }
+        }
+
+        // 2. Capture Buffer Hash for other resources (excluding large media)
+        if (response.status() < 300 || response.status() >= 400) {
+          if (!['image', 'media', 'font'].includes(request.resourceType())) {
+            const buffer = await response.buffer().catch(() => null);
+            if (buffer) {
+              logEntry.sha256Hash = generateHash(buffer);
+            }
+          }
+        }
+        networkLogs.push(logEntry);
+      } catch (err) {
+        // Ignore failures on closed or incomplete streams
+      }
+    });
+
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Allow time for the SPA to render and execute its API calls
+    await new Promise(resolve => setTimeout(resolve, wait * 1000));
+
+    const finalUrl = page.url();
+    const htmlContent = await page.content();
+    const pageSha256 = generateHash(htmlContent);
+
+    let finalUrlFragment = "";
+    try { finalUrlFragment = new URL(finalUrl).hash; } catch (e) { finalUrlFragment = ""; }
+
+    await browser.close();
+
+    return res.status(200).json({
+      target_url: url,
+      final_url: finalUrl,
+      url_fragment: finalUrlFragment,
+      page_sha256Hash: pageSha256,
+      waited_seconds: wait,
+      captured_edata: capturedEdata, // The captured API payload is returned here
+      total_requests: networkLogs.length,
+      logs: networkLogs
+    });
 
   } catch (error) {
-    return res.status(500).json({
-      error: "Proxy request to UP Bhulekh failed",
+    if (browser) await browser.close();
+    return res.status(500).json({ 
+      error: "Bypass failed or timeout", 
       details: error.message,
     });
   }
