@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/find/(.*)",
+      "destination": "/api/find.js"
+    }
+  ]
+}
