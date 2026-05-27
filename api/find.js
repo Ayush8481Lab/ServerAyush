@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   const targetUrl = new URL('https://api.mxplayer.in/v1/web/search/resultv2');
   targetUrl.searchParams.append('query', query); // Dynamically set search term
   targetUrl.searchParams.append('device-density', '2');
-  targetUrl.searchParams.append('userid', '0cb7cc11-888e-4a7f-91c5-03324e874fc6');
+  
   targetUrl.searchParams.append('platform', 'com.mxplay.desktop');
   targetUrl.searchParams.append('content-languages', 'hi,en');
   targetUrl.searchParams.append('kids-mode-enabled', 'false');
