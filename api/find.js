@@ -38,12 +38,9 @@ export default async function handler(req, res) {
   const headers = {
     'Host': 'api.mxplayer.in',
     'referer': 'https://www.mxplayer.in/',
-    'x-guard-key': 'hKZ4lHsRAutrNWFkpA4KXk7FcGvNxATIq3NkA1Fbta4l8V2v1MCIDkIVpvi/FhO3h78aTo56GmqTC6NL+gThbDGC93myejodo8kCn0OT1y68bq1Y9I8MM9vUMZC9TBdeiCmJaJE4YktJz9msI03/B5hNR/zkQlFl88x1Dl5n0v7E2SbTVuNGpIptAA5Z1Juw+61skTrwjpzsiokTOK2RJnJ+zO1UzdoAySRQm/tsLUgRHTmtNth/4+J3cSXYWuZNpkK6XCNqsmfZuLxCjkChQsDh0qnuGetFvSA7RsrwkUZ3lMqkZzBPexIqG7w1CsBLZArj1iYfBYar+wo1I1nP/A==',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     'accept': 'application/json, text/plain, */*',
     'content-type': 'application/json',
-    'x-guard-flag': 'true',
-    'cookie': 'platform=com.mxplay.desktop; UserID=0cb7cc11-888e-4a7f-91c5-03324e874fc6; languageDismissed=false; Content-Languages=hi,en; _scor_uid=9269cfc7b703400a8420e79fc31ef7d3; _fbp=fb.1.1779908541661.15703676466149378; _gid=GA1.2.1164952542.1779908542; scrnWdth=800; scrnDPI=1; isWebpSupported=1; _gat=1; _gcl_au=1.1.1975758585.1779908543; _ga_L9MTP48BE1=GS2.1.s1779908542$o1$g0$t1779908542$j60$l0$h0; _ga=GA1.1.278093201.1779908542',
     'priority': 'u=1, i',
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
