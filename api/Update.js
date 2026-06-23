@@ -16,7 +16,9 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    let exactPayload = null;
+    
+    // We replace the single variable with an Array to trap everything
+    const capturedHistory = [];
 
     page.on('request', (interceptedRequest) => {
       const url = interceptedRequest.url();
@@ -24,25 +26,40 @@ export default async function handler(req, res) {
       if (url.includes('pathfinder') && url.includes('query')) {
         const method = interceptedRequest.method();
 
-        // CASE A: Spotify sent it as a POST request
+        // 1. CATCH POST REQUESTS
         if (method === 'POST') {
           const postData = interceptedRequest.postData();
-          if (postData && postData.includes('getTrack')) {
+          if (postData) {
             try {
               const parsed = JSON.parse(postData);
-              if (parsed.operationName === 'getTrack') exactPayload = parsed;
+              // GraphQL allows sending an array of multiple payloads at once
+              const batch = Array.isArray(parsed) ? parsed : [parsed];
+              
+              batch.forEach(item => {
+                capturedHistory.push({
+                  operationName: item.operationName || "Unnamed_POST",
+                  method: "POST",
+                  payload: item
+                });
+              });
             } catch (e) {}
           }
         } 
-        // CASE B: Spotify sent it as a GET request (Standard for Tracks)
-        else if (method === 'GET' && url.includes('operationName=getTrack')) {
+        // 2. CATCH GET REQUESTS
+        else if (method === 'GET') {
           try {
             const urlObj = new URL(url);
-            exactPayload = {
-              operationName: urlObj.searchParams.get('operationName'),
-              variables: JSON.parse(urlObj.searchParams.get('variables')),
-              extensions: JSON.parse(urlObj.searchParams.get('extensions'))
-            };
+            const opName = urlObj.searchParams.get('operationName') || "Unnamed_GET";
+            
+            capturedHistory.push({
+              operationName: opName,
+              method: "GET",
+              payload: {
+                operationName: opName,
+                variables: JSON.parse(urlObj.searchParams.get('variables') || '{}'),
+                extensions: JSON.parse(urlObj.searchParams.get('extensions') || '{}')
+              }
+            });
           } catch (e) {}
         }
       }
@@ -52,20 +69,23 @@ export default async function handler(req, res) {
       waitUntil: 'networkidle2' 
     });
 
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // PRO TRICK: Scroll down 1500 pixels to force Spotify to trigger 
+    // the "Lyrics", "Credits", and "Artist Bio" GraphQL calls!
+    await page.evaluate(() => window.scrollBy(0, 1500));
+
+    // Wait 4 seconds for the scroll-triggered network requests to finish
+    await new Promise(resolve => setTimeout(resolve, 4000));
+
     await browser.close();
 
-    if (exactPayload) {
-      return res.status(200).json({
-        SUCCESS: "COPY THE 'payload' OBJECT BELOW INTO YOUR PYTHON main.py",
-        payload: exactPayload
-      });
-    } else {
-      return res.status(404).json({ error: "Payload not intercepted. Spotify may have served this page via static SSR." });
-    }
+    return res.status(200).json({
+      total_api_calls_captured: capturedHistory.length,
+      menu_of_operations: capturedHistory.map(x => x.operationName),
+      all_data: capturedHistory
+    });
 
   } catch (error) {
     if (browser) await browser.close();
-    return res.status(500).json({ error: "Failed to open page", details: error.message });
+    return res.status(500).json({ error: "Scraping failed", details: error.message });
   }
 }
