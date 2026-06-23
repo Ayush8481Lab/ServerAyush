@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     });
 
     // 2. Open Spotify to a specific search page (This forces Spotify to fire the request)
-    await page.goto('https://open.spotify.com/search/Drake', { waitUntil: 'networkidle2' });
+    await page.goto('https://open.spotify.com/track/4qnFfsCaMe2Nsg1VfFPxq9', { waitUntil: 'networkidle2' });
 
     // Wait 3 seconds to ensure the API request finishes
     await new Promise(resolve => setTimeout(resolve, 3000));
