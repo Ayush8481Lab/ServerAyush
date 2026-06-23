@@ -1,4 +1,3 @@
-
 import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
@@ -19,35 +18,50 @@ export default async function handler(req, res) {
     const page = await browser.newPage();
     let exactPayload = null;
 
-    // 1. Secretly listen to all network requests
     page.on('request', (interceptedRequest) => {
-      // Look specifically for Spotify's GraphQL API
-      if (interceptedRequest.url().includes('pathfinder/v2/query')) {
-        const postData = interceptedRequest.postData();
-        
-        // If the request contains the search data, steal the payload!
-        if (postData && postData.includes('searchDesktop')) {
-          exactPayload = JSON.parse(postData);
+      const url = interceptedRequest.url();
+
+      if (url.includes('pathfinder') && url.includes('query')) {
+        const method = interceptedRequest.method();
+
+        // CASE A: Spotify sent it as a POST request
+        if (method === 'POST') {
+          const postData = interceptedRequest.postData();
+          if (postData && postData.includes('getTrack')) {
+            try {
+              const parsed = JSON.parse(postData);
+              if (parsed.operationName === 'getTrack') exactPayload = parsed;
+            } catch (e) {}
+          }
+        } 
+        // CASE B: Spotify sent it as a GET request (Standard for Tracks)
+        else if (method === 'GET' && url.includes('operationName=getTrack')) {
+          try {
+            const urlObj = new URL(url);
+            exactPayload = {
+              operationName: urlObj.searchParams.get('operationName'),
+              variables: JSON.parse(urlObj.searchParams.get('variables')),
+              extensions: JSON.parse(urlObj.searchParams.get('extensions'))
+            };
+          } catch (e) {}
         }
       }
     });
 
-    // 2. Open Spotify to a specific search page (This forces Spotify to fire the request)
-    await page.goto('https://open.spotify.com/track/4qnFfsCaMe2Nsg1VfFPxq9', { waitUntil: 'networkidle2' });
+    await page.goto('https://open.spotify.com/track/4qnFfsCaMe2Nsg1VfFPxq9', { 
+      waitUntil: 'networkidle2' 
+    });
 
-    // Wait 3 seconds to ensure the API request finishes
     await new Promise(resolve => setTimeout(resolve, 3000));
-
     await browser.close();
 
-    // 3. Print the exact Python dictionary you need for your main.py!
     if (exactPayload) {
       return res.status(200).json({
-        SUCCESS: "COPY THE 'payload' OBJECT BELOW AND PASTE IT INTO YOUR PYTHON main.py",
+        SUCCESS: "COPY THE 'payload' OBJECT BELOW INTO YOUR PYTHON main.py",
         payload: exactPayload
       });
     } else {
-      return res.status(404).json({ error: "Could not find the Payload. Try refreshing the page." });
+      return res.status(404).json({ error: "Payload not intercepted. Spotify may have served this page via static SSR." });
     }
 
   } catch (error) {
