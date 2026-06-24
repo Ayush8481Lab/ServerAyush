@@ -71,10 +71,10 @@ export default async function handler(req, res) {
 
     // PRO TRICK: Scroll down 1500 pixels to force Spotify to trigger 
     // the "Lyrics", "Credits", and "Artist Bio" GraphQL calls!
-    await page.evaluate(() => window.scrollBy(0, 1500));
+    await page.evaluate(() => window.scrollBy(0, 3000));
 
     // Wait 4 seconds for the scroll-triggered network requests to finish
-    await new Promise(resolve => setTimeout(resolve, 4000));
+    await new Promise(resolve => setTimeout(resolve, 6000));
 
     await browser.close();
 
