@@ -65,7 +65,7 @@ export default async function handler(req, res) {
       }
     });
 
-    await page.goto('https://open.spotify.com/track/4qnFfsCaMe2Nsg1VfFPxq9', { 
+    await page.goto('https://open.spotify.com/artist/1wRPtKGflJrBx9BmLsSwlU', { 
       waitUntil: 'networkidle2' 
     });
 
