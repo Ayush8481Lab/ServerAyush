@@ -16,106 +16,58 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    const capturedHistory = [];
+    
+    // We are hunting for the exact moment this Playlist ID arrives on the machine
+    const TARGET_ID = "37i9dQZF1E8NM0krosgZdk";
+    const caughtEndpoints = [];
 
-    // OMNI-CATCHER INTERCEPTOR
-    page.on('request', (interceptedRequest) => {
-      const url = interceptedRequest.url();
+    // INTERCEPT EVERY SINGLE RESPONSE
+    page.on('response', async (response) => {
+      const url = response.url();
+      
+      // Ignore images, video streams, and CSS to speed up the scraper
+      if (url.includes('.jpg') || url.includes('.png') || url.includes('.css') || url.includes('.js')) return;
 
-      if (url.includes('pathfinder') && url.includes('query')) {
-        const method = interceptedRequest.method();
-
-        if (method === 'POST') {
-          const postData = interceptedRequest.postData();
-          if (postData) {
-            try {
-              const parsed = JSON.parse(postData);
-              const batch = Array.isArray(parsed) ? parsed : [parsed];
-              batch.forEach(item => {
-                capturedHistory.push({
-                  operationName: item.operationName || "Unnamed_POST",
-                  method: "POST",
-                  payload: item
-                });
-              });
-            } catch (e) {}
-          }
-        } 
-        else if (method === 'GET') {
-          try {
-            const urlObj = new URL(url);
-            const opName = urlObj.searchParams.get('operationName') || "Unnamed_GET";
-            capturedHistory.push({
-              operationName: opName,
-              method: "GET",
-              payload: {
-                operationName: opName,
-                variables: JSON.parse(urlObj.searchParams.get('variables') || '{}'),
-                extensions: JSON.parse(urlObj.searchParams.get('extensions') || '{}')
-              }
-            });
-          } catch (e) {}
+      try {
+        const text = await response.text();
+        // IF THE RESPONSE CONTAINS THE RADIO ID, TRAP IT!
+        if (text.includes(TARGET_ID)) {
+          caughtEndpoints.push({
+            url: url,
+            method: response.request().method(),
+            response_snippet: text.substring(0, 300) + "..." // Print the first 300 chars so you can analyze it
+          });
         }
+      } catch (e) {
+        // Silently ignore responses that can't be parsed
       }
     });
 
-    const trackId = '2lRpc4yAz0Bc2lMmFATLGv';
+    const trackId = '4qnFfsCaMe2Nsg1VfFPxq9';
 
-    // =========================================================
-    // STEP 1: VISIT THE TRACK PAGE 
-    // =========================================================
-    await page.goto(`https://open.spotify.com/track/${trackId}`, { 
-      waitUntil: 'networkidle2' 
-    });
+    // 1. Visit the Track Page 
+    await page.goto(`https://open.spotify.com/track/${trackId}`, { waitUntil: 'networkidle2' });
     
-    // =========================================================
-    // STEP 2: CLICK THE "MORE" (3-DOTS) BUTTON
-    // We target the data-testid attribute because it is hardcoded by Spotify
-    // =========================================================
+    // 2. Click the Radio Button
     try {
       const moreBtn = await page.waitForSelector('button[data-testid="more-button"]', { timeout: 5000 });
       await moreBtn.click();
-      
-      // Wait 1.5 seconds for the React dropdown menu to animate open
       await new Promise(resolve => setTimeout(resolve, 1500)); 
-    } catch (e) {
-      console.log("Could not find the 3-dots button.");
-    }
+    } catch (e) {}
 
-    // =========================================================
-    // STEP 3: FIND "GO TO SONG RADIO" AND CLICK IT
-    // =========================================================
     await page.evaluate(() => {
-      // Find every link/button in the context menu
       const menuItems = Array.from(document.querySelectorAll('a, button, [role="menuitem"]'));
-      
-      // Look for the exact text (ignoring case)
       const radioBtn = menuItems.find(el => el.textContent.toLowerCase().includes('song radio'));
-      
-      if (radioBtn) {
-        radioBtn.click(); // Trigger the exact action a human would!
-      }
+      if (radioBtn) radioBtn.click();
     });
 
-    // =========================================================
-    // STEP 4: CAPTURE THE RADIO PLAYLIST PAYLOADS
-    // Wait 5 seconds for the SPA router to transition to /playlist/37i9dQZF1...
-    // and fire the network requests
-    // =========================================================
+    // Wait 5 seconds for the network calls to finish
     await new Promise(resolve => setTimeout(resolve, 5000));
-
-    // Scroll down the radio page to ensure the full playlist loads
-    await page.evaluate(() => window.scrollBy(0, 2000));
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
     await browser.close();
 
-    const uniqueOperations = [...new Set(capturedHistory.map(x => x.operationName))];
-
     return res.status(200).json({
-      total_api_calls_captured: capturedHistory.length,
-      menu_of_unique_operations: uniqueOperations,
-      all_data: capturedHistory
+      SUCCESS: `We hunted down the exact origin of the Radio ID!`,
+      endpoints_that_returned_it: caughtEndpoints
     });
 
   } catch (error) {
