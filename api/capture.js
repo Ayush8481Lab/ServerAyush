@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   // 1. CONFIGURATION: PASTE YOUR COOKIE & SELECTORS HERE
   // =========================================================
   
-  const SP_DC_COOKIE_VALUE = "PASTE_YOUR_SP_DC_COOKIE_HERE"; 
+  const SP_DC_COOKIE_VALUE = "AQD05MKcMMPTA8l694-m7vEqCJh1IQ6qTFf7F93KsWhBFPHGYUw4DAxzdn9cLxnFcQjQl3GlI6mXtKwAq-drF4V--kcmVILwCKn1FX5mNtC23OtS3PaMobhGjYuHpQF9F-6Fty91MFjRVr6F0IW83eOQgPx-pC5XdYE4oZn55uaIZLClm01UhvzqA3dGw0IrFilH6zeCZ77FTtJgp-X0nMpebqLrW7Gf-9Ujx09yZDKHlT-ilt-0omGD2cevmsGEenRxGwOpicIa_Vo"; 
   const COOKIE_NAME = "sp_dc"; 
 
   // Spotify Play Button Selectors
