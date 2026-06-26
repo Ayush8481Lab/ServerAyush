@@ -3,8 +3,26 @@ import chromium from '@sparticuz/chromium-min';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
+  // =========================================================
+  // 1. CONFIGURATION: PASTE YOUR COOKIE & SELECTORS HERE
+  // =========================================================
+  
+  // Paste your Spotify sp_dc cookie value inside the quotes below:
+  const SP_DC_COOKIE_VALUE = "AQD05MKcMMPTA8l694-m7vEqCJh1IQ6qTFf7F93KsWhBFPHGYUw4DAxzdn9cLxnFcQjQl3GlI6mXtKwAq-drF4V--kcmVILwCKn1FX5mNtC23OtS3PaMobhGjYuHpQF9F-6Fty91MFjRVr6F0IW83eOQgPx-pC5XdYE4oZn55uaIZLClm01UhvzqA3dGw0IrFilH6zeCZ77FTtJgp-X0nMpebqLrW7Gf-9Ujx09yZDKHlT-ilt-0omGD2cevmsGEenRxGwOpicIa_Vo"; 
+  const COOKIE_NAME = "sp_dc"; // Change this if you target a site other than Spotify
+
+  // Update this list of selectors for the play button if targeting a different site:
+  const TARGET_BUTTON_SELECTOR = 'button[data-testid="play-button"], button[data-testid="control-button-playpause"], button[aria-label^="Play"]';
+
+  // =========================================================
+
   const url = req.query.url;
   const wait = req.query.wait ? parseInt(req.query.wait) : 5;
+
+  // Only allow GET requests
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: "Method not allowed, use GET." });
+  }
 
   if (!url) {
     return res.status(400).json({ error: "Please provide a URL." });
@@ -22,7 +40,7 @@ export default async function handler(req, res) {
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--mute-audio' // Good practice so the server doesn't hang on audio context
+        '--mute-audio'
       ],
       executablePath: executablePath,
       headless: chromium.headless,
@@ -36,10 +54,29 @@ export default async function handler(req, res) {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
     });
 
+    // --- 2. INJECT CUSTOM HARDCODED COOKIE ---
+    let cookieInjected = false;
+    if (SP_DC_COOKIE_VALUE !== "PASTE_YOUR_SP_DC_COOKIE_HERE" && SP_DC_COOKIE_VALUE !== "") {
+      // Automatically grab the domain from the requested URL (e.g., .spotify.com)
+      const urlObj = new URL(url);
+      const baseDomain = `.${urlObj.hostname.replace(/^www\./, '')}`;
+
+      await page.setCookie({
+        name: COOKIE_NAME,
+        value: SP_DC_COOKIE_VALUE,
+        domain: baseDomain,
+        path: '/',
+        secure: true,
+        httpOnly: true // Often required for session cookies
+      });
+      cookieInjected = true;
+      console.log(`Injected custom cookie: ${COOKIE_NAME}`);
+    }
+
     const networkLogs = [];
     const generateHash = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
-    // --- DEEP NETWORK LISTENER FOR API DATA ---
+    // --- 3. DEEP NETWORK LISTENER FOR API DATA ---
     page.on('response', async (response) => {
       try {
         const request = response.request();
@@ -48,11 +85,7 @@ export default async function handler(req, res) {
         let payload = request.postData();
         
         if (payload) {
-          try {
-            payload = JSON.parse(payload);
-          } catch (e) {
-            // Leave as string if not JSON
-          }
+          try { payload = JSON.parse(payload); } catch (e) { /* Leave as string */ }
         }
 
         const logEntry = {
@@ -78,68 +111,57 @@ export default async function handler(req, res) {
       }
     });
 
-    // 1. OPEN THE SPOTIFY PAGE
-    // Using domcontentloaded is faster, letting our custom 4-second timer take over immediately
+    // --- 4. OPEN PAGE ---
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // 2. WAIT EXACTLY 4 SECONDS AFTER OPENING
+    // --- 5. WAIT EXACTLY 4 SECONDS AFTER OPENING ---
     await new Promise(resolve => setTimeout(resolve, 4000));
 
-    // 3. FIND AND CLICK SPOTIFY PLAY BUTTON
-    let playButtonClicked = false;
-    
-    // Spotify uses specific data-testid attributes for their play buttons
-    const playButtonSelector = 'button[data-testid="play-button"], button[data-testid="control-button-playpause"], button[aria-label^="Play"]'; 
+    // --- 6. FIND AND CLICK TARGET BUTTON ---
+    let buttonClicked = false;
     
     try {
-      // Ensure the button is present in the DOM
-      await page.waitForSelector(playButtonSelector, { timeout: 3000 });
+      await page.waitForSelector(TARGET_BUTTON_SELECTOR, { timeout: 3000 });
       
-      // Force click via DOM evaluation. 
-      // This bypasses Spotify's "Accept Cookies" banner which often blocks standard Puppeteer clicks.
       const clicked = await page.evaluate((selector) => {
         const buttons = document.querySelectorAll(selector);
         for (let btn of buttons) {
-          // Check if button is actually visible on the page
-          if (btn && btn.offsetParent !== null) { 
+          if (btn && btn.offsetParent !== null) { // Ensure button is visible
             btn.click();
             return true;
           }
         }
-        // Fallback: click the very first one found if visibility check fails
+        // Fallback: click the first one if visibility checks fail
         if (buttons.length > 0) {
           buttons[0].click();
           return true;
         }
         return false;
-      }, playButtonSelector);
+      }, TARGET_BUTTON_SELECTOR);
 
-      playButtonClicked = clicked;
+      buttonClicked = clicked;
       
-      // 4. WAIT AFTER CLICKING to allow Spotify's streaming/tracking APIs to fire
+      // Wait after clicking to allow API streaming/tracking requests to fire
       await new Promise(resolve => setTimeout(resolve, 5000)); 
 
     } catch (e) {
-      console.log("Spotify play button not found or failed to click:", e.message);
+      console.log("Target button not found or failed to click.");
     }
 
-    // Final Capture
     const finalUrl = page.url();
-    
     await browser.close();
 
-    // Optional: Filter to just show API calls to make your output cleaner
     const apiCallsWithPostData = networkLogs.filter(log => log.is_api_call && log.requestPayload);
 
     return res.status(200).json({
       target_url: url,
       final_url: finalUrl,
+      custom_cookie_used: cookieInjected ? COOKIE_NAME : "None",
       waited_before_click: "4 seconds",
-      play_button_clicked: playButtonClicked,
+      button_clicked: buttonClicked,
       total_requests: networkLogs.length,
       total_api_post_requests: apiCallsWithPostData.length,
-      // You can return `apiCallsWithPostData` here instead of `networkLogs` if you ONLY want to see API bodies
-      logs: networkLogs 
+      logs: networkLogs // Returns all network activity and payloads
     });
 
   } catch (error) {
