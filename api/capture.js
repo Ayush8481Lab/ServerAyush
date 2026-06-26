@@ -60,7 +60,7 @@ export default async function handler(req, res) {
 
     // --- 2. INJECT CUSTOM HARDCODED COOKIE ---
     let cookieInjected = false;
-    if (SP_DC_COOKIE_VALUE !== "AQD05MKcMMPTA8l694-m7vEqCJh1IQ6qTFf7F93KsWhBFPHGYUw4DAxzdn9cLxnFcQjQl3GlI6mXtKwAq-drF4V--kcmVILwCKn1FX5mNtC23OtS3PaMobhGjYuHpQF9F-6Fty91MFjRVr6F0IW83eOQgPx-pC5XdYE4oZn55uaIZLClm01UhvzqA3dGw0IrFilH6zeCZ77FTtJgp-X0nMpebqLrW7Gf-9Ujx09yZDKHlT-ilt-0omGD2cevmsGEenRxGwOpicIa_Vo" && SP_DC_COOKIE_VALUE !== "") {
+    if (SP_DC_COOKIE_VALUE !== "PASTE_YOUR_SP_DC_COOKIE_HERE" && SP_DC_COOKIE_VALUE !== "") {
       const urlObj = new URL(url);
       const baseDomain = `.${urlObj.hostname.replace(/^www\./, '')}`;
 
