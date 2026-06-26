@@ -21,7 +21,8 @@ export default async function handler(req, res) {
         ...chromium.args,
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
-        '--disable-setuid-sandbox'
+        '--disable-setuid-sandbox',
+        '--mute-audio' // Good practice so the server doesn't hang on audio context
       ],
       executablePath: executablePath,
       headless: chromium.headless,
@@ -38,21 +39,19 @@ export default async function handler(req, res) {
     const networkLogs = [];
     const generateHash = (data) => crypto.createHash('sha256').update(data).digest('hex');
 
-    // --- ENHANCED DEEP NETWORK LISTENER ---
+    // --- DEEP NETWORK LISTENER FOR API DATA ---
     page.on('response', async (response) => {
       try {
         const request = response.request();
         const resourceType = request.resourceType();
         
-        // 1. Capture POST/PUT Data
         let payload = request.postData();
         
-        // 2. Try to parse JSON payloads for cleaner API logs
         if (payload) {
           try {
             payload = JSON.parse(payload);
           } catch (e) {
-            // If it's not JSON (e.g., form-data or plain text), keep it as a string
+            // Leave as string if not JSON
           }
         }
 
@@ -60,14 +59,12 @@ export default async function handler(req, res) {
           url: response.url(),
           method: request.method(),
           type: resourceType,
-          is_api_call: (resourceType === 'fetch' || resourceType === 'xhr'), // Flag specifically for APIs
+          is_api_call: (resourceType === 'fetch' || resourceType === 'xhr'),
           status: response.status(),
           headers: response.headers(),
-          requestPayload: payload || null, // <--- Accurately logs POST/API data
+          requestPayload: payload || null, 
           sha256Hash: "n/a"
         };
-
-        try { logEntry.hash = new URL(response.url()).hash; } catch (e) { logEntry.hash = ""; }
 
         if (response.status() < 300 || response.status() >= 400) {
           const buffer = await response.buffer().catch(() => null);
@@ -81,53 +78,74 @@ export default async function handler(req, res) {
       }
     });
 
-    // Navigate and bypass
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await new Promise(resolve => setTimeout(resolve, wait * 1000));
+    // 1. OPEN THE SPOTIFY PAGE
+    // Using domcontentloaded is faster, letting our custom 4-second timer take over immediately
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // FIND AND CLICK PLAY BUTTON
+    // 2. WAIT EXACTLY 4 SECONDS AFTER OPENING
+    await new Promise(resolve => setTimeout(resolve, 4000));
+
+    // 3. FIND AND CLICK SPOTIFY PLAY BUTTON
     let playButtonClicked = false;
-    // Common selectors for streaming sites (Update if needed for your specific site)
-    const playButtonSelector = 'button[aria-label="Play"], .play-button, .vjs-big-play-button, .plyr__control--overlaid, video'; 
+    
+    // Spotify uses specific data-testid attributes for their play buttons
+    const playButtonSelector = 'button[data-testid="play-button"], button[data-testid="control-button-playpause"], button[aria-label^="Play"]'; 
     
     try {
-      await page.waitForSelector(playButtonSelector, { timeout: 5000 });
-      await page.click(playButtonSelector);
-      playButtonClicked = true;
+      // Ensure the button is present in the DOM
+      await page.waitForSelector(playButtonSelector, { timeout: 3000 });
       
-      // Wait 3-5 seconds after clicking play to allow the API POST requests to fire and be captured
-      await new Promise(resolve => setTimeout(resolve, 4000)); 
+      // Force click via DOM evaluation. 
+      // This bypasses Spotify's "Accept Cookies" banner which often blocks standard Puppeteer clicks.
+      const clicked = await page.evaluate((selector) => {
+        const buttons = document.querySelectorAll(selector);
+        for (let btn of buttons) {
+          // Check if button is actually visible on the page
+          if (btn && btn.offsetParent !== null) { 
+            btn.click();
+            return true;
+          }
+        }
+        // Fallback: click the very first one found if visibility check fails
+        if (buttons.length > 0) {
+          buttons[0].click();
+          return true;
+        }
+        return false;
+      }, playButtonSelector);
+
+      playButtonClicked = clicked;
+      
+      // 4. WAIT AFTER CLICKING to allow Spotify's streaming/tracking APIs to fire
+      await new Promise(resolve => setTimeout(resolve, 5000)); 
+
     } catch (e) {
-      console.log("Play button not found or could not be clicked.");
+      console.log("Spotify play button not found or failed to click:", e.message);
     }
 
+    // Final Capture
     const finalUrl = page.url();
-    const htmlContent = await page.content();
-    const pageSha256 = generateHash(htmlContent);
-    let finalUrlFragment = "";
-    try { finalUrlFragment = new URL(finalUrl).hash; } catch (e) { finalUrlFragment = ""; }
-
+    
     await browser.close();
 
-    // Filter to optionally just show API calls in your console (Optional debugging)
+    // Optional: Filter to just show API calls to make your output cleaner
     const apiCallsWithPostData = networkLogs.filter(log => log.is_api_call && log.requestPayload);
 
     return res.status(200).json({
       target_url: url,
       final_url: finalUrl,
-      url_fragment: finalUrlFragment,
-      page_sha256Hash: pageSha256,
-      waited_seconds: wait,
+      waited_before_click: "4 seconds",
       play_button_clicked: playButtonClicked,
       total_requests: networkLogs.length,
-      total_api_post_requests: apiCallsWithPostData.length, // Easy metric to check
-      logs: networkLogs
+      total_api_post_requests: apiCallsWithPostData.length,
+      // You can return `apiCallsWithPostData` here instead of `networkLogs` if you ONLY want to see API bodies
+      logs: networkLogs 
     });
 
   } catch (error) {
     if (browser) await browser.close();
     return res.status(500).json({ 
-      error: "Bypass failed or timeout", 
+      error: "Scraper failed or timeout", 
       details: error.message
     });
   }
