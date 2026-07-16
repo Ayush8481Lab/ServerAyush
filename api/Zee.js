@@ -8,7 +8,6 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
 
-    // 2. Check for channel ID
     const channel = req.query.c;
     if (!channel) {
         return res.status(400).json({ success: false, error: 'Channel parameter "c" is required.' });
@@ -21,8 +20,20 @@ export default async function handler(req, res) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                // Added a User-Agent to prevent Zee5 from blocking the request as a bot
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                // Mimic a real Chrome browser on a Windows PC
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
+                // Tell the firewall we are coming from the official Zee5 website
+                'Origin': 'https://www.zee5.com',
+                'Referer': 'https://www.zee5.com/',
+                // Standard browser fetch headers
+                'Sec-Fetch-Site': 'same-site',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty',
+                'sec-ch-ua': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"'
             },
             body: JSON.stringify({
                 "x-access-token": "",  
@@ -30,13 +41,12 @@ export default async function handler(req, res) {
             })
         });
 
-        // DEBUG: Check if Zee5 blocked the request (e.g., 403 Forbidden)
         if (!response.ok) {
             const errorText = await response.text();
             return res.status(response.status).json({
                 success: false,
                 error: `Zee5 API rejected the request with status: ${response.status}`,
-                details: errorText // This will show us WHY Zee5 blocked it
+                details: errorText
             });
         }
 
@@ -60,12 +70,11 @@ export default async function handler(req, res) {
             return res.status(404).json({ 
                 success: false, 
                 error: 'Data fetched successfully, but no stream_url (video_token) was found in the response.',
-                full_response: data // Shows exactly what Zee5 sent back so you can inspect it
+                full_response: data 
             });
         }
 
     } catch (error) {
-        // This will print the EXACT Javascript error if something crashes
         console.error('API Error:', error);
         return res.status(500).json({ 
             success: false, 
