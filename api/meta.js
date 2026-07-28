@@ -24,7 +24,7 @@ export default async function handler(req, res) {
         'content-type': 'application/json',
         'package-name': 'com.vlv.web.reels',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'cookie': 'guest_user_id=19afb9c4-bb56-4789-a15d-071353907227; preferredLang=hindi'
+        'cookie': ' preferredLang=hindi'
       },
       // If the target returns a 308 redirect and you want node to follow it automatically:
       redirect: 'follow', 
