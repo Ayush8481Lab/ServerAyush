@@ -18,13 +18,13 @@ export default async function handler(req, res) {
       method: 'GET',
       headers: {
         'preferred-lang': 'hindi',
-        'referer': 'https://kukutv.app',
-        'x-source-service': 'app',
+        'referer': 'https://kukutv.app/watch/gaonwala-super-husband?episode=episode-11-3863',
+        'x-source-service': 'nodejs-web',
         'accept': 'application/json, text/plain, */*',
         'content-type': 'application/json',
-        'package-name': 'com.vlv.app.reels',
+        'package-name': 'com.vlv.web.reels',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'cookie': 'guest_user_id=19afb9c4-bb56-4789-a15d-071353907227; preferredLang=hindi; has_strip_banner=true'
+        'cookie': 'guest_user_id=19afb9c4-bb56-4789-a15d-071353907227; preferredLang=hindi'
       },
       // If the target returns a 308 redirect and you want node to follow it automatically:
       redirect: 'follow', 
