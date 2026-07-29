@@ -111,7 +111,7 @@ export default async function handler(req, res) {
       // The complete list of supported languages
       const ALL_LANGUAGES = [
         "hindi", "tamil", "kannada", "telugu", "malayalam", 
-        "marathi", "bengali", "english", "bhojpuri"
+        "marathi", "bengali", "english", "bhojpuri","haryanvi"
       ];
 
       let genreTitle = genres;
