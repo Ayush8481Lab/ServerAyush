@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     return {
       method: 'GET',
       headers: {
-        'preferred-lang': lang, // Injects correct language dynamically
+        'preferred-lang': lang,
         'referer': customReferer || 'https://kukutv.app/',
         'x-source-service': 'nodejs-web',
         'accept': 'application/json, text/plain, */*',
@@ -68,7 +68,6 @@ export default async function handler(req, res) {
     const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=1&page_size=${pageSize}`;
     
     try {
-      // Pass the showLang so the API gives us the correct regional video links
       const firstPageRes = await fetch(firstPageUrl, getFetchOptions(referer, showLang));
       const firstPageData = await firstPageRes.json();
 
@@ -76,7 +75,6 @@ export default async function handler(req, res) {
       const nPages = firstPageData.n_pages || 1;
       const nEpisodes = firstPageData.n_episodes || allEpisodes.length;
 
-      // Fetch remaining pages simultaneously if they exist
       if (nPages > 1) {
         const fetchPromises = [];
         for (let page = 2; page <= nPages; page++) {
@@ -114,45 +112,71 @@ export default async function handler(req, res) {
       let pageIndex = 1;
       let keepFetching = true;
       let genreTitle = genres;
-      let rawShows = [];
+      
+      // Use a Map to automatically deduplicate shows if they shift pages
+      const uniqueShowsMap = new Map();
 
-      // 1. Fetch genre pages 20 at a time until has_next is false
+      // 1. Fetch genre pages 5 AT A TIME to prevent rate-limiting skipping languages
       while (keepFetching) {
         const batchPromises = [];
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 5; i++) {
           const currentPage = pageIndex + i;
-          const url = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${defaultLang}&preferred_lang=${defaultLang}`;
+          const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${defaultLang}&preferred_lang=${defaultLang}`;
+          
           batchPromises.push(
-            fetch(url, getFetchOptions(null, defaultLang)).then(res => res.json()).catch(() => null)
+            fetch(apiUrl, getFetchOptions(null, defaultLang))
+              .then(res => {
+                if (!res.ok) throw new Error(`Status ${res.status}`);
+                return res.json();
+              })
+              .catch(() => null) // Ignore pages that error/404 out
           );
         }
 
         const batchResults = await Promise.all(batchPromises);
-        let foundDataInBatch = false;
+        let foundHasNextFalse = false;
+        let validPagesInBatch = 0;
 
         for (const resData of batchResults) {
           if (!resData) continue;
+          validPagesInBatch++;
           
           if (resData.genre && resData.genre.title) {
             genreTitle = resData.genre.title;
           }
 
           if (resData.cu_shows && resData.cu_shows.length > 0) {
-            rawShows.push(...resData.cu_shows); // Pushes ALL languages found
-            foundDataInBatch = true;
+            resData.cu_shows.forEach(show => {
+              if (!uniqueShowsMap.has(show.slug)) {
+                uniqueShowsMap.set(show.slug, show); // Stores absolutely every language
+              }
+            });
           }
 
-          // Stop if the API explicitly says there are no more pages
+          // If ANY page in this chunk says has_next: false, we are done paginating
           if (resData.has_next === false) {
-            keepFetching = false;
+            foundHasNextFalse = true;
           }
         }
 
-        // Failsafe: if an entire batch of 20 was empty, break out
-        if (!foundDataInBatch) keepFetching = false;
+        // Break loop if API said stop, or if Kuku blocked all 5 pages
+        if (foundHasNextFalse || validPagesInBatch === 0) {
+          keepFetching = false;
+        }
         
-        pageIndex += 20;
+        pageIndex += 5;
       }
+
+      // Convert our deduped Map back to a regular Array
+      const rawShows = Array.from(uniqueShowsMap.values());
+
+      // CALCULATE STATS (Total shows & Language breakdown)
+      const totalShowsCount = rawShows.length;
+      const languageBreakdown = {};
+      rawShows.forEach(show => {
+        const lang = show.language || 'unknown';
+        languageBreakdown[lang] = (languageBreakdown[lang] || 0) + 1;
+      });
 
       // 2. Fetch episodes for ALL discovered shows (Batched in chunks of 20 to prevent server timeout)
       const formattedShows = [];
@@ -162,7 +186,6 @@ export default async function handler(req, res) {
         const showChunk = rawShows.slice(i, i + chunkSize);
         
         const chunkResults = await Promise.all(showChunk.map(async (show) => {
-          // Pass show.language so Kannada gets Kannada files, Hindi gets Hindi files, etc.
           const episodeData = await fetchAllEpisodesForShow(show.slug, show.language);
           
           return {
@@ -178,8 +201,11 @@ export default async function handler(req, res) {
         formattedShows.push(...chunkResults);
       }
 
+      // 3. Return the exact JSON structure requested with Stats attached at the top!
       return res.status(200).json({
         Genre: genreTitle,
+        Total_shows: totalShowsCount,
+        Languages: languageBreakdown,
         shows: formattedShows
       });
     }
@@ -188,7 +214,6 @@ export default async function handler(req, res) {
     // FEATURE 1: SCRAPE SINGLE SHOW (?seo=...)
     // ==========================================
     if (seo) {
-      // For a single SEO request, use default lang unless specified
       const episodeData = await fetchAllEpisodesForShow(seo, defaultLang);
       const formattedResponse = {
         slug: seo,
