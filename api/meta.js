@@ -121,7 +121,7 @@ export default async function handler(req, res) {
         const batchPromises = [];
         for (let i = 0; i < 5; i++) {
           const currentPage = pageIndex + i;
-          const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${defaultLang}&preferred_lang=${defaultLang}`;
+          const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=hindi&preferred_lang=hindi`;
           
           batchPromises.push(
             fetch(apiUrl, getFetchOptions(null, defaultLang))
