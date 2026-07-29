@@ -63,11 +63,16 @@ export default async function handler(req, res) {
   // ==========================================
   async function fetchAllEpisodesForShow(slug, showLang) {
     const pageSize = 50;
-    const referer = `https://kukutv.app/show/${slug}`;
-    const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=1&page_size=${pageSize}`;
+    // URL Encode the slug so regional fonts/characters are safely transmitted
+    const encodedSlug = encodeURIComponent(slug);
+    
+    const referer = `https://kukutv.app/show/${encodedSlug}`;
+    const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${encodedSlug}/episodes?page=1&page_size=${pageSize}`;
     
     try {
       const firstPageRes = await fetch(firstPageUrl, getFetchOptions(referer, showLang));
+      
+      if (!firstPageRes.ok) throw new Error(`Status ${firstPageRes.status}`);
       const firstPageData = await firstPageRes.json();
 
       let allEpisodes = firstPageData.episodes || [];
@@ -77,8 +82,12 @@ export default async function handler(req, res) {
       if (nPages > 1) {
         const fetchPromises = [];
         for (let page = 2; page <= nPages; page++) {
-          const pageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=${page}&page_size=${pageSize}`;
-          fetchPromises.push(fetch(pageUrl, getFetchOptions(referer, showLang)).then(res => res.json()));
+          const pageUrl = `https://kukutv.app/api/v2.3/channels/${encodedSlug}/episodes?page=${page}&page_size=${pageSize}`;
+          fetchPromises.push(
+            fetch(pageUrl, getFetchOptions(referer, showLang))
+              .then(res => res.json())
+              .catch(() => ({}))
+          );
         }
         const remainingPagesData = await Promise.all(fetchPromises);
         
@@ -105,15 +114,16 @@ export default async function handler(req, res) {
 
   try {
     // ==========================================
-    // FEATURE 3: NEW - SCRAPE ENTIRE GENRE FOR ALL LANGUAGES (?genres=...)
+    // FEATURE 3: SCRAPE ENTIRE GENRE FOR ALL LANGUAGES (?genres=...)
     // ==========================================
     if (genres) {
-      // The complete list of supported languages
       const ALL_LANGUAGES = [
         "hindi", "tamil", "kannada", "telugu", "malayalam", 
-        "marathi", "bengali", "english", "bhojpuri","haryanvi","punjabi"
+        "marathi", "bengali", "english", "bhojpuri", "haryanvi", "punjabi"
       ];
 
+      // URL Encode genre just in case
+      const encodedGenre = encodeURIComponent(genres);
       let genreTitle = genres;
       const uniqueShowsMap = new Map();
 
@@ -127,8 +137,7 @@ export default async function handler(req, res) {
           const batchPromises = [];
           for (let i = 0; i < 5; i++) {
             const currentPage = pageIndex + i;
-            // Inject targetLang so the API actually filters by the right language!
-            const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${targetLang}&preferred_lang=${targetLang}`;
+            const apiUrl = `https://kukutv.app/api/v3/genres/${encodedGenre}/shows?page=${currentPage}&lang=english&preferred_langs=${targetLang}&preferred_lang=${targetLang}`;
             
             batchPromises.push(
               fetch(apiUrl, getFetchOptions(null, targetLang))
@@ -152,7 +161,6 @@ export default async function handler(req, res) {
               genreTitle = resData.genre.title;
             }
 
-            // Push discovered shows into our deduplicated Map
             if (resData.cu_shows && resData.cu_shows.length > 0) {
               resData.cu_shows.forEach(show => {
                 if (!uniqueShowsMap.has(show.slug)) {
@@ -161,7 +169,6 @@ export default async function handler(req, res) {
               });
             }
 
-            // Stop checking deeper pages if this language has reached its end
             if (resData.has_next === false) {
               foundHasNextFalse = true;
             }
@@ -175,10 +182,9 @@ export default async function handler(req, res) {
         }
       }
 
-      // Convert our deduped Map back to a regular Array containing ALL languages
       const rawShows = Array.from(uniqueShowsMap.values());
 
-      // CALCULATE STATS (Total shows & Language breakdown)
+      // CALCULATE STATS
       const totalShowsCount = rawShows.length;
       const languageBreakdown = {};
       rawShows.forEach(show => {
@@ -186,7 +192,7 @@ export default async function handler(req, res) {
         languageBreakdown[lang] = (languageBreakdown[lang] || 0) + 1;
       });
 
-      // 3. Fetch episodes for ALL discovered shows (Batched in chunks of 20 to prevent server timeout)
+      // 3. Fetch episodes for ALL discovered shows (Batched in chunks of 20)
       const formattedShows = [];
       const chunkSize = 20; 
       
@@ -209,7 +215,6 @@ export default async function handler(req, res) {
         formattedShows.push(...chunkResults);
       }
 
-      // 4. Return the complete, cross-language JSON response
       return res.status(200).json({
         Genre: genreTitle,
         Total_shows: totalShowsCount,
