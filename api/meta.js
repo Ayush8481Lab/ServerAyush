@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // 1. Only allow GET requests and Set CORS Headers
+  // 1. Allow GET requests & Set CORS
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -7,13 +7,13 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { url, seo } = req.query;
+  const { url, seo, genres } = req.query;
 
-  if (!url && !seo) {
-    return res.status(400).json({ error: 'Either "url" or "seo" parameter is required' });
+  if (!url && !seo && !genres) {
+    return res.status(400).json({ error: 'Require one parameter: url, seo, or genres' });
   }
 
-  // 2. Your cookies in JSON format (Easy to update later)
+  // 2. Cookie JSON Data
   const cookieJson = [
     { "name": "_fbp", "value": "fb.1.1785327084836.754731018580690365" },
     { "name": "preferredLang", "value": "hindi" },
@@ -32,15 +32,14 @@ export default async function handler(req, res) {
     { "name": "has_strip_banner", "value": "false" }
   ];
 
-  // Convert JSON to string format
   const cookieString = cookieJson.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
 
-  // Standardized Fetch Options
+  // 3. Dynamic Header Generator
   const getFetchOptions = (customReferer) => ({
     method: 'GET',
     headers: {
       'preferred-lang': 'hindi',
-      'referer': customReferer || 'https://kukutv.app/watch/gaonwala-super-husband?episode=episode-10-4103',
+      'referer': customReferer || 'https://kukutv.app/',
       'x-source-service': 'nodejs-web',
       'accept': 'application/json, text/plain, */*',
       'content-type': 'application/json',
@@ -51,16 +50,15 @@ export default async function handler(req, res) {
     redirect: 'follow',
   });
 
-  try {
-    // ==========================================
-    // FEATURE 1: SCRAPE ALL EPISODES (?seo=...)
-    // ==========================================
-    if (seo) {
-      const pageSize = 50;
-      const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${seo}/episodes?page=1&page_size=${pageSize}`;
-      const referer = `https://kukutv.app/show/${seo}`;
-
-      // Fetch the first page to get metadata and first batch of episodes
+  // ==========================================
+  // HELPER: Fetch all Episodes for a specific Slug
+  // ==========================================
+  async function fetchAllEpisodesForShow(slug) {
+    const pageSize = 50;
+    const referer = `https://kukutv.app/show/${slug}`;
+    const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=1&page_size=${pageSize}`;
+    
+    try {
       const firstPageRes = await fetch(firstPageUrl, getFetchOptions(referer));
       const firstPageData = await firstPageRes.json();
 
@@ -68,21 +66,15 @@ export default async function handler(req, res) {
       const nPages = firstPageData.n_pages || 1;
       const nEpisodes = firstPageData.n_episodes || allEpisodes.length;
 
-      // If there is more than 1 page, fetch them all concurrently
+      // Fetch remaining pages simultaneously if they exist
       if (nPages > 1) {
         const fetchPromises = [];
-        
         for (let page = 2; page <= nPages; page++) {
-          const pageUrl = `https://kukutv.app/api/v2.3/channels/${seo}/episodes?page=${page}&page_size=${pageSize}`;
-          fetchPromises.push(
-            fetch(pageUrl, getFetchOptions(referer)).then(res => res.json())
-          );
+          const pageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=${page}&page_size=${pageSize}`;
+          fetchPromises.push(fetch(pageUrl, getFetchOptions(referer)).then(res => res.json()));
         }
-
-        // Wait for all remaining pages to resolve at the same time
         const remainingPagesData = await Promise.all(fetchPromises);
         
-        // Merge the episodes from all extra pages into our main array
         for (const pageData of remainingPagesData) {
           if (pageData.episodes) {
             allEpisodes = allEpisodes.concat(pageData.episodes);
@@ -90,17 +82,100 @@ export default async function handler(req, res) {
         }
       }
 
-      // Format the exact response requested by you
-      const formattedResponse = {
-        slug: seo,
+      return {
         no_of_episodes: nEpisodes,
         episodes: allEpisodes.map(ep => ({
-          title: ep.title, // e.g., "Episode - 1"
-          video_hls_url: ep.content?.video_hls_url || ep.content?.hls_url || null, // Gets the .m3u8 link
-          duration: ep.duration_s || ep.content?.duration || 0 // Gets duration in seconds
+          title: ep.title,
+          video_hls_url: ep.content?.video_hls_url || ep.content?.hls_url || null,
+          duration: ep.duration_s || ep.content?.duration || 0
         }))
       };
+    } catch (e) {
+      console.error(`Error fetching episodes for ${slug}:`, e.message);
+      return { no_of_episodes: 0, episodes: [] }; // Fallback on error
+    }
+  }
 
+  try {
+    // ==========================================
+    // FEATURE 3: NEW - SCRAPE ENTIRE GENRE (?genres=...)
+    // ==========================================
+    if (genres) {
+      let pageIndex = 1;
+      let keepFetching = true;
+      let genreTitle = genres;
+      let rawShows = [];
+
+      // 1. Fetch genre pages 20 pages at a time until has_next is false
+      while (keepFetching) {
+        const batchPromises = [];
+        for (let i = 0; i < 20; i++) {
+          const currentPage = pageIndex + i;
+          const url = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=hindi&preferred_lang=hindi`;
+          batchPromises.push(
+            fetch(url, getFetchOptions()).then(res => res.json()).catch(() => null) // Ignore failed single pages
+          );
+        }
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const resData of batchResults) {
+          if (!resData) continue;
+          
+          if (resData.genre && resData.genre.title) {
+            genreTitle = resData.genre.title; // Extract exact genre title dynamically
+          }
+
+          if (resData.cu_shows && resData.cu_shows.length > 0) {
+            rawShows.push(...resData.cu_shows);
+          }
+
+          // If we encounter a page indicating the end, stop fetching more pages
+          if (resData.has_next === false || !resData.cu_shows || resData.cu_shows.length === 0) {
+            keepFetching = false;
+          }
+        }
+        pageIndex += 20;
+      }
+
+      // 2. Fetch episodes for EVERY discovered show (Batched in chunks of 20 to prevent server timeout/crashing)
+      const formattedShows = [];
+      const chunkSize = 20; 
+      
+      for (let i = 0; i < rawShows.length; i += chunkSize) {
+        const showChunk = rawShows.slice(i, i + chunkSize);
+        
+        const chunkResults = await Promise.all(showChunk.map(async (show) => {
+          const episodeData = await fetchAllEpisodesForShow(show.slug);
+          return {
+            slug: show.slug,
+            title: show.title,
+            image: show.image || (show.other_images && show.other_images.title_image) || "",
+            language: show.language,
+            no_of_episodes: episodeData.no_of_episodes || show.n_episodes,
+            episodes: episodeData.episodes
+          };
+        }));
+        
+        formattedShows.push(...chunkResults);
+      }
+
+      return res.status(200).json({
+        Genre: genreTitle,
+        shows: formattedShows
+      });
+    }
+
+    // ==========================================
+    // FEATURE 1: SCRAPE SINGLE SHOW (?seo=...)
+    // ==========================================
+    if (seo) {
+      const episodeData = await fetchAllEpisodesForShow(seo);
+      const formattedResponse = {
+        slug: seo,
+        no_of_episodes: episodeData.no_of_episodes,
+        episodes: episodeData.episodes
+      };
       return res.status(200).json(formattedResponse);
     }
 
@@ -125,6 +200,6 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('API Error:', error.message);
-    return res.status(500).json({ error: 'Failed to fetch the requested resource', details: error.message });
+    return res.status(500).json({ error: 'Failed to process request', details: error.message });
   }
 }
