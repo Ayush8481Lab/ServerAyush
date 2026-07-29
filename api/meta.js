@@ -7,7 +7,8 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { url, seo, genres } = req.query;
+  const { url, seo, genres, pref_lang } = req.query;
+  const defaultLang = pref_lang || 'hindi';
 
   if (!url && !seo && !genres) {
     return res.status(400).json({ error: 'Require one parameter: url, seo, or genres' });
@@ -32,34 +33,43 @@ export default async function handler(req, res) {
     { "name": "has_strip_banner", "value": "false" }
   ];
 
-  const cookieString = cookieJson.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+  // 3. Dynamic Header Generator (Changes based on the Show's Language)
+  const getFetchOptions = (customReferer, showLang) => {
+    const lang = showLang || defaultLang;
 
-  // 3. Dynamic Header Generator
-  const getFetchOptions = (customReferer) => ({
-    method: 'GET',
-    headers: {
-      'preferred-lang': 'hindi',
-      'referer': customReferer || 'https://kukutv.app/',
-      'x-source-service': 'nodejs-web',
-      'accept': 'application/json, text/plain, */*',
-      'content-type': 'application/json',
-      'package-name': 'com.vlv.web.reels',
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      'cookie': cookieString
-    },
-    redirect: 'follow',
-  });
+    // Dynamically replace the language in the cookie so it matches the show
+    const cookieString = cookieJson.map(cookie => {
+      if (cookie.name === 'preferredLang') return `${cookie.name}=${lang}`;
+      return `${cookie.name}=${cookie.value}`;
+    }).join('; ');
+
+    return {
+      method: 'GET',
+      headers: {
+        'preferred-lang': lang, // Injects correct language dynamically
+        'referer': customReferer || 'https://kukutv.app/',
+        'x-source-service': 'nodejs-web',
+        'accept': 'application/json, text/plain, */*',
+        'content-type': 'application/json',
+        'package-name': 'com.vlv.web.reels',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'cookie': cookieString
+      },
+      redirect: 'follow',
+    };
+  };
 
   // ==========================================
   // HELPER: Fetch all Episodes for a specific Slug
   // ==========================================
-  async function fetchAllEpisodesForShow(slug) {
+  async function fetchAllEpisodesForShow(slug, showLang) {
     const pageSize = 50;
     const referer = `https://kukutv.app/show/${slug}`;
     const firstPageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=1&page_size=${pageSize}`;
     
     try {
-      const firstPageRes = await fetch(firstPageUrl, getFetchOptions(referer));
+      // Pass the showLang so the API gives us the correct regional video links
+      const firstPageRes = await fetch(firstPageUrl, getFetchOptions(referer, showLang));
       const firstPageData = await firstPageRes.json();
 
       let allEpisodes = firstPageData.episodes || [];
@@ -71,7 +81,7 @@ export default async function handler(req, res) {
         const fetchPromises = [];
         for (let page = 2; page <= nPages; page++) {
           const pageUrl = `https://kukutv.app/api/v2.3/channels/${slug}/episodes?page=${page}&page_size=${pageSize}`;
-          fetchPromises.push(fetch(pageUrl, getFetchOptions(referer)).then(res => res.json()));
+          fetchPromises.push(fetch(pageUrl, getFetchOptions(referer, showLang)).then(res => res.json()));
         }
         const remainingPagesData = await Promise.all(fetchPromises);
         
@@ -92,7 +102,7 @@ export default async function handler(req, res) {
       };
     } catch (e) {
       console.error(`Error fetching episodes for ${slug}:`, e.message);
-      return { no_of_episodes: 0, episodes: [] }; // Fallback on error
+      return { no_of_episodes: 0, episodes: [] };
     }
   }
 
@@ -106,39 +116,45 @@ export default async function handler(req, res) {
       let genreTitle = genres;
       let rawShows = [];
 
-      // 1. Fetch genre pages 20 pages at a time until has_next is false
+      // 1. Fetch genre pages 20 at a time until has_next is false
       while (keepFetching) {
         const batchPromises = [];
         for (let i = 0; i < 20; i++) {
           const currentPage = pageIndex + i;
-          const url = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=hindi&preferred_lang=hindi`;
+          const url = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${defaultLang}&preferred_lang=${defaultLang}`;
           batchPromises.push(
-            fetch(url, getFetchOptions()).then(res => res.json()).catch(() => null) // Ignore failed single pages
+            fetch(url, getFetchOptions(null, defaultLang)).then(res => res.json()).catch(() => null)
           );
         }
 
         const batchResults = await Promise.all(batchPromises);
+        let foundDataInBatch = false;
 
         for (const resData of batchResults) {
           if (!resData) continue;
           
           if (resData.genre && resData.genre.title) {
-            genreTitle = resData.genre.title; // Extract exact genre title dynamically
+            genreTitle = resData.genre.title;
           }
 
           if (resData.cu_shows && resData.cu_shows.length > 0) {
-            rawShows.push(...resData.cu_shows);
+            rawShows.push(...resData.cu_shows); // Pushes ALL languages found
+            foundDataInBatch = true;
           }
 
-          // If we encounter a page indicating the end, stop fetching more pages
-          if (resData.has_next === false || !resData.cu_shows || resData.cu_shows.length === 0) {
+          // Stop if the API explicitly says there are no more pages
+          if (resData.has_next === false) {
             keepFetching = false;
           }
         }
+
+        // Failsafe: if an entire batch of 20 was empty, break out
+        if (!foundDataInBatch) keepFetching = false;
+        
         pageIndex += 20;
       }
 
-      // 2. Fetch episodes for EVERY discovered show (Batched in chunks of 20 to prevent server timeout/crashing)
+      // 2. Fetch episodes for ALL discovered shows (Batched in chunks of 20 to prevent server timeout)
       const formattedShows = [];
       const chunkSize = 20; 
       
@@ -146,7 +162,9 @@ export default async function handler(req, res) {
         const showChunk = rawShows.slice(i, i + chunkSize);
         
         const chunkResults = await Promise.all(showChunk.map(async (show) => {
-          const episodeData = await fetchAllEpisodesForShow(show.slug);
+          // Pass show.language so Kannada gets Kannada files, Hindi gets Hindi files, etc.
+          const episodeData = await fetchAllEpisodesForShow(show.slug, show.language);
+          
           return {
             slug: show.slug,
             title: show.title,
@@ -170,7 +188,8 @@ export default async function handler(req, res) {
     // FEATURE 1: SCRAPE SINGLE SHOW (?seo=...)
     // ==========================================
     if (seo) {
-      const episodeData = await fetchAllEpisodesForShow(seo);
+      // For a single SEO request, use default lang unless specified
+      const episodeData = await fetchAllEpisodesForShow(seo, defaultLang);
       const formattedResponse = {
         slug: seo,
         no_of_episodes: episodeData.no_of_episodes,
@@ -184,7 +203,7 @@ export default async function handler(req, res) {
     // ==========================================
     if (url) {
       const targetUrl = new URL(url);
-      const response = await fetch(targetUrl.toString(), getFetchOptions());
+      const response = await fetch(targetUrl.toString(), getFetchOptions(null, defaultLang));
 
       const contentType = response.headers.get('content-type') || '';
       let data;
