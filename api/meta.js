@@ -37,7 +37,6 @@ export default async function handler(req, res) {
   const getFetchOptions = (customReferer, showLang) => {
     const lang = showLang || defaultLang;
 
-    // Dynamically replace the language in the cookie so it matches the show
     const cookieString = cookieJson.map(cookie => {
       if (cookie.name === 'preferredLang') return `${cookie.name}=${lang}`;
       return `${cookie.name}=${cookie.value}`;
@@ -106,68 +105,77 @@ export default async function handler(req, res) {
 
   try {
     // ==========================================
-    // FEATURE 3: NEW - SCRAPE ENTIRE GENRE (?genres=...)
+    // FEATURE 3: NEW - SCRAPE ENTIRE GENRE FOR ALL LANGUAGES (?genres=...)
     // ==========================================
     if (genres) {
-      let pageIndex = 1;
-      let keepFetching = true;
+      // The complete list of supported languages
+      const ALL_LANGUAGES = [
+        "hindi", "tamil", "kannada", "telugu", "malayalam", 
+        "marathi", "bengali", "english", "bhojpuri"
+      ];
+
       let genreTitle = genres;
-      
-      // Use a Map to automatically deduplicate shows if they shift pages
       const uniqueShowsMap = new Map();
 
-      // 1. Fetch genre pages 5 AT A TIME to prevent rate-limiting skipping languages
-      while (keepFetching) {
-        const batchPromises = [];
-        for (let i = 0; i < 5; i++) {
-          const currentPage = pageIndex + i;
-          const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=hindi&preferred_lang=hindi`;
+      // 1. Loop through EVERY language
+      for (const targetLang of ALL_LANGUAGES) {
+        let pageIndex = 1;
+        let keepFetching = true;
+
+        // 2. Fetch genre pages 5 AT A TIME per language
+        while (keepFetching) {
+          const batchPromises = [];
+          for (let i = 0; i < 5; i++) {
+            const currentPage = pageIndex + i;
+            // Inject targetLang so the API actually filters by the right language!
+            const apiUrl = `https://kukutv.app/api/v3/genres/${genres}/shows?page=${currentPage}&lang=english&preferred_langs=${targetLang}&preferred_lang=${targetLang}`;
+            
+            batchPromises.push(
+              fetch(apiUrl, getFetchOptions(null, targetLang))
+                .then(res => {
+                  if (!res.ok) throw new Error(`Status ${res.status}`);
+                  return res.json();
+                })
+                .catch(() => null) 
+            );
+          }
+
+          const batchResults = await Promise.all(batchPromises);
+          let foundHasNextFalse = false;
+          let validPagesInBatch = 0;
+
+          for (const resData of batchResults) {
+            if (!resData) continue;
+            validPagesInBatch++;
+            
+            if (resData.genre && resData.genre.title) {
+              genreTitle = resData.genre.title;
+            }
+
+            // Push discovered shows into our deduplicated Map
+            if (resData.cu_shows && resData.cu_shows.length > 0) {
+              resData.cu_shows.forEach(show => {
+                if (!uniqueShowsMap.has(show.slug)) {
+                  uniqueShowsMap.set(show.slug, show); 
+                }
+              });
+            }
+
+            // Stop checking deeper pages if this language has reached its end
+            if (resData.has_next === false) {
+              foundHasNextFalse = true;
+            }
+          }
+
+          if (foundHasNextFalse || validPagesInBatch === 0) {
+            keepFetching = false;
+          }
           
-          batchPromises.push(
-            fetch(apiUrl, getFetchOptions(null, defaultLang))
-              .then(res => {
-                if (!res.ok) throw new Error(`Status ${res.status}`);
-                return res.json();
-              })
-              .catch(() => null) // Ignore pages that error/404 out
-          );
+          pageIndex += 5;
         }
-
-        const batchResults = await Promise.all(batchPromises);
-        let foundHasNextFalse = false;
-        let validPagesInBatch = 0;
-
-        for (const resData of batchResults) {
-          if (!resData) continue;
-          validPagesInBatch++;
-          
-          if (resData.genre && resData.genre.title) {
-            genreTitle = resData.genre.title;
-          }
-
-          if (resData.cu_shows && resData.cu_shows.length > 0) {
-            resData.cu_shows.forEach(show => {
-              if (!uniqueShowsMap.has(show.slug)) {
-                uniqueShowsMap.set(show.slug, show); // Stores absolutely every language
-              }
-            });
-          }
-
-          // If ANY page in this chunk says has_next: false, we are done paginating
-          if (resData.has_next === false) {
-            foundHasNextFalse = true;
-          }
-        }
-
-        // Break loop if API said stop, or if Kuku blocked all 5 pages
-        if (foundHasNextFalse || validPagesInBatch === 0) {
-          keepFetching = false;
-        }
-        
-        pageIndex += 5;
       }
 
-      // Convert our deduped Map back to a regular Array
+      // Convert our deduped Map back to a regular Array containing ALL languages
       const rawShows = Array.from(uniqueShowsMap.values());
 
       // CALCULATE STATS (Total shows & Language breakdown)
@@ -178,7 +186,7 @@ export default async function handler(req, res) {
         languageBreakdown[lang] = (languageBreakdown[lang] || 0) + 1;
       });
 
-      // 2. Fetch episodes for ALL discovered shows (Batched in chunks of 20 to prevent server timeout)
+      // 3. Fetch episodes for ALL discovered shows (Batched in chunks of 20 to prevent server timeout)
       const formattedShows = [];
       const chunkSize = 20; 
       
@@ -201,7 +209,7 @@ export default async function handler(req, res) {
         formattedShows.push(...chunkResults);
       }
 
-      // 3. Return the exact JSON structure requested with Stats attached at the top!
+      // 4. Return the complete, cross-language JSON response
       return res.status(200).json({
         Genre: genreTitle,
         Total_shows: totalShowsCount,
