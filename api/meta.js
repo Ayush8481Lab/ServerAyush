@@ -1,8 +1,5 @@
-
-
-
 export default async function handler(req, res) {
-  // 1. Allow GET requests & Set CORS
+  // 1. Allow GET requests & Set COR
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
