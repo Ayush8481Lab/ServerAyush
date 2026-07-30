@@ -7,29 +7,29 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const { url, seo, genres, pref_lang } = req.query;
+  const { url, seo, genres, pref_lang, spn, epn } = req.query;
   const defaultLang = pref_lang || 'hindi';
 
   if (!url && !seo && !genres) {
     return res.status(400).json({ error: 'Require one parameter: url, seo, or genres' });
   }
 
-  // 2. Cookie JSON Data
+  // 2. Updated Cookie JSON Data
   const cookieJson = [
     { "name": "_fbp", "value": "fb.1.1785327084836.754731018580690365" },
     { "name": "preferredLang", "value": "hindi" },
-    { "name": "CloudFront-Signature", "value": "VwCKTcwD2F9-bNQdclGbjCXnemYGkQ7ZlxMvU7m-MjgqCh5vQwd9LfQgPx6zJPxDu4i~RZdthp4jO3coIsvym~lMYqmqatbpTkZ9SIkw1LoVYpEl7mt3nbP52Bm2hhwucLMUNj2~bbEZuNvU4xmQvKjvhPdz-R1EmMwWX3fV4PO6AFGPiQFBPYjy1lBQIfCplFpyukHuwWQbnVDEcdPn9qSsPtioQkwlAV3j1ipUASvn654CeUF8qrUVh9D3sk9iI8rsX3KqZpu8BCkWldHaqNuyhXsLSswmbS8yw2MaIh2ntM9issNM3eptXzjtQbEBuBj5q5x9YofsxIBMQZs5~Q__" },
+    { "name": "CloudFront-Signature", "value": "AOUzFv6c8wtdDOPzY2xnboyfOEa9TbJ2hH31yc~tct1qzEhmx7H-LJcs6Fz-ieiC-f0H8Z~BIDnwVpkLg5csN8dyjDZcmyjvTqWVNUc1BFA8l7RtPwxYL-J-AXJTt8g6afGi~A0Aze-EENvjQg~wkckdz2KmJJnu2WRiE7oOCtXFIJshPrm~Sr~HKj6NOZqehlA2VVvcEbAfz6YJvm3OpY2TeP7gFgo2Xgp~BF4VT77qrHfTo65YqsoPx0XbATXMW9IJh5qzVnMvfbxP0UkYeuyApAC91BPenOHOr1iiFFeybGCWcjdIXuRA-IaYPmQp0XelgxinLVWLZj1J805nIA__" },
     { "name": "_gcl_au", "value": "1.1.602972533.1785327083" },
     { "name": "_gcl_aw", "value": "GCL.1785327237.CjwKCAjwyabTBhBFEiwAM3mNUAef-up7eB0G9WCZiRCPVS_3UFdEbsTHywdx4StEmPceY_J38bCaKhoCBAoQAvD_BwE" },
-    { "name": "jwtToken", "value": "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozNzUxMjk1NjgsImV4cCI6MTc4NjYyMzU3NywidW5pcXVlX2lkIjoiMWRmOTgwM2ItMzkxZC00YjBkLThlNzctOTMxOGNjYmRjODMxIn0.Vm6ClBDkfkAhUWWXnxFhKufGWgG_dNOobvHbiQUYqxu7HzZ-OOm7k30WVenedkZKmQ8YwEcg3wgpSEEUrjmnlA" },
+    { "name": "jwtToken", "value": "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozNzU1NzkzNDAsImV4cCI6MTc4NjcwMTc2MSwidW5pcXVlX2lkIjoiOGIwODRkYWQtNDEzOC00ZDdlLTk5YWItZTEzYTQyOTA1MDk2In0.LSt4D5LlBBd-mMlEeFpIPys0Y1rifumzqBHk5AiIR6R9_OqcSMYIZAyH0itp-cC0e5lmGGMBThYVUj4cVH5Fdg" },
     { "name": "_ga", "value": "GA1.1.2139426549.1785327084" },
-    { "name": "_ga_S16VQXJEBE", "value": "GS2.1.s1785327083$o1$g1$t1785327583$j57$l0$h0" },
+    { "name": "_ga_S16VQXJEBE", "value": "GS2.1.s1785405697$o3$g1$t1785405763$j57$l0$h0" },
     { "name": "_gcl_gs", "value": "2.1.k1$i1785327080$u234687327" },
-    { "name": "cdn_cookie_created_at", "value": "\"2026-07-29 12:13:37+00:00\"" },
-    { "name": "cdn_cookie_expires_at", "value": "\"2026-07-29 14:13:37+00:00\"" },
+    { "name": "cdn_cookie_created_at", "value": "\"2026-07-30 09:59:47+00:00\"" },
+    { "name": "cdn_cookie_expires_at", "value": "\"2026-07-30 11:59:47+00:00\"" },
     { "name": "CloudFront-Key-Pair-Id", "value": "K2ZMC0VBPI9ZOX" },
-    { "name": "CloudFront-Policy", "value": "eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9tZWRpYS5jZG4ua3VrdWZtLmNvbS8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzg1MzM0NDE3fX0sIkN1c3RvbURhdGEiOnsidXNlcl9pZCI6Mzc1MTI5NTY4fX1dfQ__" },
-    { "name": "guest_user_id", "value": "fbd1272b-5ecb-48d6-a2b6-d640fdd5664e" },
+    { "name": "CloudFront-Policy", "value": "eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9tZWRpYS5jZG4ua3VrdWZtLmNvbS8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzg1NDEyNzg3fX0sIkN1c3RvbURhdGEiOnsidXNlcl9pZCI6Mzc1MTI5NTY4fX1dfQ__" },
+    { "name": "guest_user_id", "value": "4415862b-2624-445f-b805-6ecc9fb31120" },
     { "name": "has_strip_banner", "value": "false" }
   ];
 
@@ -122,20 +122,28 @@ export default async function handler(req, res) {
         "marathi", "bengali", "english", "bhojpuri", "haryanvi", "punjabi"
       ];
 
-      // URL Encode genre just in case
       const encodedGenre = encodeURIComponent(genres);
       let genreTitle = genres;
       const uniqueShowsMap = new Map();
 
+      // Setup custom start and end pages if provided (Default to 1 -> Infinity)
+      const startPage = spn ? parseInt(spn, 10) : 1;
+      const endPage = epn ? parseInt(epn, 10) : Infinity;
+
       // 1. Loop through EVERY language
       for (const targetLang of ALL_LANGUAGES) {
-        let pageIndex = 1;
+        let pageIndex = startPage;
         let keepFetching = true;
 
         // 2. Fetch genre pages 5 AT A TIME per language
-        while (keepFetching) {
+        // Stop if keepFetching is false OR we exceed the user-defined endPage
+        while (keepFetching && pageIndex <= endPage) {
           const batchPromises = [];
-          for (let i = 0; i < 5; i++) {
+          
+          // Determine how many pages to fetch in this batch (Max 5, but don't exceed endPage)
+          const pagesToFetch = Math.min(5, endPage - pageIndex + 1);
+
+          for (let i = 0; i < pagesToFetch; i++) {
             const currentPage = pageIndex + i;
             const apiUrl = `https://kukutv.app/api/v3/genres/${encodedGenre}/shows?page=${currentPage}&lang=english&preferred_langs=${targetLang}&preferred_lang=${targetLang}`;
             
