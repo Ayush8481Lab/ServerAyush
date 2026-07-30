@@ -1,3 +1,6 @@
+
+
+
 export default async function handler(req, res) {
   // 1. Allow GET requests & Set CORS
   if (req.method !== 'GET') {
