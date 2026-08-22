@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // 1. Get the URL from the query parameter (?url=...)
+  // 1. Get the URL from the query parameter (?url=..
   const { url } = req.query;
 
   // 2. Check if URL is provided
