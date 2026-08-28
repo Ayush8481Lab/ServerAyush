@@ -2,7 +2,6 @@ import puppeteer from 'puppeteer-core';
 import chromium from '@sparticuz/chromium-min';
 
 export default async function handler(req, res) {
-  // Only allow GET
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -12,12 +11,10 @@ export default async function handler(req, res) {
 
   let browser = null;
   try {
-    // 1. Download Chromium binary using the same pattern as your working Spotify code
     const executablePath = await chromium.executablePath(
       'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar'
     );
 
-    // 2. Launch browser
     browser = await puppeteer.launch({
       args: chromium.args,
       executablePath: executablePath,
@@ -29,25 +26,65 @@ export default async function handler(req, res) {
     const page = await browser.newPage();
     page.setDefaultTimeout(30000);
 
-    // 3. Navigate to the video page
+    // Navigate and wait for network to be mostly idle
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // 4. Wait for the poster image to load
-    const posterSelector = '.vds-poster img';
-    await page.waitForSelector(posterSelector, { timeout: 15000 });
+    // Wait for the player to appear
+    await page.waitForSelector('media-player', { timeout: 10000 });
 
-    // 5. Extract the src attribute
-    const posterUrl = await page.$eval(posterSelector, (el) => el.src);
+    // Poll for the poster URL (image or background)
+    const posterUrl = await page.waitForFunction(
+      () => {
+        // 1. Try to find an <img> with a valid src
+        const images = document.querySelectorAll('img');
+        for (const img of images) {
+          const src = img.src;
+          if (src && src.length > 0 && !src.startsWith('data:') && (src.includes('poster') || src.includes('thumbnail'))) {
+            return src;
+          }
+        }
+
+        // 2. Check specific poster containers
+        const posterSelectors = ['.vds-poster', 'media-poster', '[data-poster]'];
+        for (const sel of posterSelectors) {
+          const el = document.querySelector(sel);
+          if (el) {
+            // Check <img> inside
+            const img = el.querySelector('img');
+            if (img && img.src && !img.src.startsWith('data:')) {
+              return img.src;
+            }
+            // Check background-image
+            const bg = getComputedStyle(el).backgroundImage;
+            if (bg && bg !== 'none') {
+              const match = bg.match(/url\(["']?(.*?)["']?\)/);
+              if (match) return match[1];
+            }
+          }
+        }
+
+        // 3. Look for any image with src starting with / and containing 'poster' or 'thumbnail'
+        const allImgs = document.querySelectorAll('img[src*="poster"], img[src*="thumbnail"]');
+        for (const img of allImgs) {
+          if (img.src && !img.src.startsWith('data:')) {
+            return img.src;
+          }
+        }
+
+        return null;
+      },
+      { timeout: 15000, polling: 500 }
+    );
 
     if (!posterUrl) {
-      throw new Error('Poster image not found');
+      throw new Error('Poster image not found after waiting');
     }
 
-    // 6. Return the result
+    // Return the absolute URL (already absolute because browser resolves it)
     res.status(200).json({ poster: posterUrl });
 
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error:', error.message);
     res.status(500).json({ error: error.message });
   } finally {
     if (browser) {
