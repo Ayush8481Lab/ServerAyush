@@ -11,7 +11,6 @@ export default async function handler(req, res) {
 
   let browser = null;
   try {
-    // 1. Download Chromium binary
     const executablePath = await chromium.executablePath(
       'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar'
     );
@@ -25,38 +24,38 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    page.setDefaultTimeout(60000); // Increase timeout
+    page.setDefaultTimeout(30000);
 
-    // 2. Intercept the response from /api/v1/info
-    const responsePromise = page.waitForResponse(
-      (response) => response.url().includes('/api/v1/info') && response.status() === 200,
-      { timeout: 30000 }
-    );
+    // 1. Intercept all requests
+    let posterUrl = null;
+    const requestHandler = (request) => {
+      const url = request.url();
+      // Look for the poster image pattern
+      if (url.includes('poster.png') || url.includes('/poster')) {
+        posterUrl = url;
+        // Optionally abort to save bandwidth
+        // request.abort();
+      }
+    };
+    page.on('request', requestHandler);
 
-    // 3. Navigate to the page
+    // 2. Navigate to the page
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // 4. Wait for the API response
-    const response = await responsePromise;
-    const encryptedHex = await response.text();
+    // 3. Wait a bit for the poster request to be initiated
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 5. Use the page's own decryption function `ue` to decrypt the response
-    const thumbnail = await page.evaluate(async (hex) => {
-      // The page's `ue` function should be globally available
-      // If not, we need to find it in the global scope.
-      // We'll attempt to call it from the window.
-      const decryptedJson = await window.ue(hex);
-      const data = JSON.parse(decryptedJson);
-      return data.thumbnail || data.poster || null;
-    }, encryptedHex);
-
-    if (!thumbnail) {
-      throw new Error('No thumbnail/poster found in decrypted data');
+    // 4. If not found via network, try DOM as fallback
+    if (!posterUrl) {
+      posterUrl = await page.evaluate(() => {
+        const img = document.querySelector('img[src*="poster"], .vds-poster img, media-poster img');
+        return img ? img.src : null;
+      });
     }
 
-    // 6. Construct full URL
-    const baseUrl = 'https://hubstream.art';
-    const posterUrl = thumbnail.startsWith('http') ? thumbnail : `${baseUrl}${thumbnail}`;
+    if (!posterUrl) {
+      throw new Error('Poster URL not found');
+    }
 
     res.status(200).json({ poster: posterUrl });
 
