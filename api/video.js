@@ -17,7 +17,7 @@ export default async function handler(req, res) {
 
     browser = await puppeteer.launch({
       args: chromium.args,
-      executablePath: executablePath,
+      executablePath,
       headless: chromium.headless,
       defaultViewport: chromium.defaultViewport,
       ignoreHTTPSErrors: true,
@@ -26,45 +26,40 @@ export default async function handler(req, res) {
     const page = await browser.newPage();
     page.setDefaultTimeout(30000);
 
-    // 1. Intercept all requests
+    // Intercept poster request
     let posterUrl = null;
-    const requestHandler = (request) => {
-      const url = request.url();
-      // Look for the poster image pattern
-      if (url.includes('poster.png') || url.includes('/poster')) {
-        posterUrl = url;
-        // Optionally abort to save bandwidth
-        // request.abort();
+    page.on('request', (request) => {
+      if (request.url().includes('poster.png')) {
+        posterUrl = request.url();
       }
-    };
-    page.on('request', requestHandler);
+    });
 
-    // 2. Navigate to the page
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // 3. Wait a bit for the poster request to be initiated
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    // Wait a moment for the poster request
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // 4. If not found via network, try DOM as fallback
-    if (!posterUrl) {
-      posterUrl = await page.evaluate(() => {
-        const img = document.querySelector('img[src*="poster"], .vds-poster img, media-poster img');
-        return img ? img.src : null;
-      });
-    }
+    // Extract key and IV
+    const cryptoKeys = await page.evaluate(() => {
+      const key = window.ee();
+      const iv = window.oe();
+      return window.crypto.subtle.exportKey('raw', key).then((rawKey) => ({
+        keyBase64: btoa(String.fromCharCode(...new Uint8Array(rawKey))),
+        ivBase64: btoa(String.fromCharCode(...new Uint8Array(iv)))
+      }));
+    });
 
-    if (!posterUrl) {
-      throw new Error('Poster URL not found');
-    }
-
-    res.status(200).json({ poster: posterUrl });
+    res.status(200).json({
+      poster: posterUrl,
+      keyBase64: cryptoKeys.keyBase64,
+      ivBase64: cryptoKeys.ivBase64,
+      note: 'These keys are session-specific and may expire.'
+    });
 
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: error.message });
   } finally {
-    if (browser) {
-      await browser.close();
-    }
+    if (browser) await browser.close();
   }
 }
