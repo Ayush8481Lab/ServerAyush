@@ -24,63 +24,58 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    page.setDefaultTimeout(30000);
+    page.setDefaultTimeout(60000);
 
-    // Navigate and wait for network to be mostly idle
+    // Inject script to intercept the decryption function
+    await page.evaluateOnNewDocument(() => {
+      // Wait for the page's `ue` function to be defined, then wrap it
+      const originalUe = window.ue;
+      if (originalUe) {
+        window.ue = async function(x) {
+          const result = await originalUe(x);
+          window.__decryptedInfo = result; // Store the decrypted JSON string
+          return result;
+        };
+      } else {
+        // If not defined yet, set a mutation observer or use a setInterval to check
+        const checkInterval = setInterval(() => {
+          if (window.ue && !window.__uePatched) {
+            window.__uePatched = true;
+            const orig = window.ue;
+            window.ue = async function(x) {
+              const result = await orig(x);
+              window.__decryptedInfo = result;
+              return result;
+            };
+            clearInterval(checkInterval);
+          }
+        }, 100);
+      }
+    });
+
     await page.goto(url, { waitUntil: 'networkidle2' });
 
-    // Wait for the player to appear
-    await page.waitForSelector('media-player', { timeout: 10000 });
-
-    // Poll for the poster URL (image or background)
-    const posterUrl = await page.waitForFunction(
+    // Wait for the decrypted data to be stored
+    const thumbnail = await page.waitForFunction(
       () => {
-        // 1. Try to find an <img> with a valid src
-        const images = document.querySelectorAll('img');
-        for (const img of images) {
-          const src = img.src;
-          if (src && src.length > 0 && !src.startsWith('data:') && (src.includes('poster') || src.includes('thumbnail'))) {
-            return src;
+        if (window.__decryptedInfo) {
+          try {
+            const data = JSON.parse(window.__decryptedInfo);
+            return data.thumbnail || data.poster || null;
+          } catch (e) {
+            return null;
           }
         }
-
-        // 2. Check specific poster containers
-        const posterSelectors = ['.vds-poster', 'media-poster', '[data-poster]'];
-        for (const sel of posterSelectors) {
-          const el = document.querySelector(sel);
-          if (el) {
-            // Check <img> inside
-            const img = el.querySelector('img');
-            if (img && img.src && !img.src.startsWith('data:')) {
-              return img.src;
-            }
-            // Check background-image
-            const bg = getComputedStyle(el).backgroundImage;
-            if (bg && bg !== 'none') {
-              const match = bg.match(/url\(["']?(.*?)["']?\)/);
-              if (match) return match[1];
-            }
-          }
-        }
-
-        // 3. Look for any image with src starting with / and containing 'poster' or 'thumbnail'
-        const allImgs = document.querySelectorAll('img[src*="poster"], img[src*="thumbnail"]');
-        for (const img of allImgs) {
-          if (img.src && !img.src.startsWith('data:')) {
-            return img.src;
-          }
-        }
-
         return null;
       },
-      { timeout: 15000, polling: 500 }
+      { timeout: 30000, polling: 500 }
     );
 
-    if (!posterUrl) {
-      throw new Error('Poster image not found after waiting');
+    if (!thumbnail) {
+      throw new Error('Thumbnail not found in decrypted data');
     }
 
-    // Return the absolute URL (already absolute because browser resolves it)
+    const posterUrl = `https://hubstream.art${thumbnail}`;
     res.status(200).json({ poster: posterUrl });
 
   } catch (error) {
