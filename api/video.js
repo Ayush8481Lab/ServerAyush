@@ -11,6 +11,7 @@ export default async function handler(req, res) {
 
   let browser = null;
   try {
+    // 1. Download Chromium binary
     const executablePath = await chromium.executablePath(
       'https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar'
     );
@@ -24,62 +25,43 @@ export default async function handler(req, res) {
     });
 
     const page = await browser.newPage();
-    page.setDefaultTimeout(60000);
+    page.setDefaultTimeout(60000); // Increase timeout
 
-    // Inject script to intercept the decryption function
-    await page.evaluateOnNewDocument(() => {
-      // Wait for the page's `ue` function to be defined, then wrap it
-      const originalUe = window.ue;
-      if (originalUe) {
-        window.ue = async function(x) {
-          const result = await originalUe(x);
-          window.__decryptedInfo = result; // Store the decrypted JSON string
-          return result;
-        };
-      } else {
-        // If not defined yet, set a mutation observer or use a setInterval to check
-        const checkInterval = setInterval(() => {
-          if (window.ue && !window.__uePatched) {
-            window.__uePatched = true;
-            const orig = window.ue;
-            window.ue = async function(x) {
-              const result = await orig(x);
-              window.__decryptedInfo = result;
-              return result;
-            };
-            clearInterval(checkInterval);
-          }
-        }, 100);
-      }
-    });
-
-    await page.goto(url, { waitUntil: 'networkidle2' });
-
-    // Wait for the decrypted data to be stored
-    const thumbnail = await page.waitForFunction(
-      () => {
-        if (window.__decryptedInfo) {
-          try {
-            const data = JSON.parse(window.__decryptedInfo);
-            return data.thumbnail || data.poster || null;
-          } catch (e) {
-            return null;
-          }
-        }
-        return null;
-      },
-      { timeout: 30000, polling: 500 }
+    // 2. Intercept the response from /api/v1/info
+    const responsePromise = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/info') && response.status() === 200,
+      { timeout: 30000 }
     );
 
+    // 3. Navigate to the page
+    await page.goto(url, { waitUntil: 'networkidle2' });
+
+    // 4. Wait for the API response
+    const response = await responsePromise;
+    const encryptedHex = await response.text();
+
+    // 5. Use the page's own decryption function `ue` to decrypt the response
+    const thumbnail = await page.evaluate(async (hex) => {
+      // The page's `ue` function should be globally available
+      // If not, we need to find it in the global scope.
+      // We'll attempt to call it from the window.
+      const decryptedJson = await window.ue(hex);
+      const data = JSON.parse(decryptedJson);
+      return data.thumbnail || data.poster || null;
+    }, encryptedHex);
+
     if (!thumbnail) {
-      throw new Error('Thumbnail not found in decrypted data');
+      throw new Error('No thumbnail/poster found in decrypted data');
     }
 
-    const posterUrl = `https://hubstream.art${thumbnail}`;
+    // 6. Construct full URL
+    const baseUrl = 'https://hubstream.art';
+    const posterUrl = thumbnail.startsWith('http') ? thumbnail : `${baseUrl}${thumbnail}`;
+
     res.status(200).json({ poster: posterUrl });
 
   } catch (error) {
-    console.error('Error:', error.message);
+    console.error('Error:', error);
     res.status(500).json({ error: error.message });
   } finally {
     if (browser) {
